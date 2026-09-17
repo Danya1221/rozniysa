@@ -1,0 +1,44 @@
+name: Tests and bot integration
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: retail
+          POSTGRES_PASSWORD: test_only
+          POSTGRES_DB: retail_pair_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Matching checkout implementation
+        uses: actions/checkout@v4
+        with:
+          repository: Danya1221/zayavki
+          ref: 50b00ba4d3cbdf07dba7f439e75f37a3b0899044
+          path: _pair/zayavki
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt -r _pair/zayavki/requirements.txt
+      - run: python -m compileall -q .
+      - run: python -m unittest discover -s tests -v
+      - name: Price to order, SQLite
+        env:
+          ZAYAVKI_PATH: _pair/zayavki
+        run: python tests/integration_pair.py -v
+      - name: Price to order, PostgreSQL
+        env:
+          ZAYAVKI_PATH: _pair/zayavki
+          PAIR_TEST_DATABASE_URL: postgresql://retail:test_only@localhost:5432/retail_pair_test
+        run: python tests/integration_pair.py -v

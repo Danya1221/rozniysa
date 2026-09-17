@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+*.session
+*.session-journal
+state.json*
+*.lock
+__pycache__/
+*.pyc
+.venv/
+
+rozniysa_state.json*
+*.db*

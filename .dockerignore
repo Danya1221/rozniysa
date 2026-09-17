@@ -1,0 +1,11 @@
+.git
+.env
+.env.*
+!.env.example
+state.json*
+*.session*
+__pycache__
+tests
+
+rozniysa_state.json*
+*.db*
