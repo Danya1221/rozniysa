@@ -19,6 +19,13 @@ class RetailSyncService(SyncService):
         super().__init__(client, settings, state)
         self.retail, self.order_username = retail, order_username
 
+    def status(self):
+        text = super().status()
+        if hasattr(self.retail, "local"):
+            bridge = self.retail.local.get("bridge", "status", {})
+            text += "\nСвязь с оформлением: " + bridge.get("message", "ожидает передачи каталога")
+        return text
+
     async def connect_account(self, slot):
         try:
             return await super().connect_account(slot)
