@@ -172,6 +172,19 @@ class RetailAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.publisher.counter, count)
         self.assertFalse(self.publisher.calls)
 
+    async def test_deleted_navigation_rebuilds_links_before_pinning(self):
+        await self.publisher.publish(self.pages)
+        nodes = self.publisher.nodes()
+        old_root = nodes['root:0']['id']
+        del self.publisher.messages[old_root]
+        nodes['root:0']['checked'] = 0
+        self.publisher.save_nodes(nodes)
+        await self.publisher.publish(self.pages)
+        new_root = self.publisher.nodes()['root:0']['id']
+        self.assertNotEqual(new_root, old_root)
+        self.assertTrue(self.store.get('system','catalog_url').endswith('/'+str(new_root)))
+        self.assertEqual(self.state.get('retail_pinned')['id'],new_root)
+
     async def test_deleted_page_recovered_without_rebuilding_other_prices(self):
         await self.publisher.publish(self.pages)
         manifest = self.state.get('published')['messages']

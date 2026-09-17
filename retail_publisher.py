@@ -167,7 +167,8 @@ class RetailPublisher(BotAPIPublisher):
             message = (await self._photo(text, brand, keyboard, photo_id or None) if brand else
                        await self.api("sendMessage", chat_id=self.target, text=text, parse_mode="HTML", reply_markup=keyboard))
             record = {"id": int(message["message_id"])}
-        record.update(hash=fingerprint, photo=bool(brand), photo_id=photo_id, checked=time.time())
+        record.update(hash=fingerprint, photo=bool(brand), photo_id=photo_id, checked=time.time(),
+                      text=text, rows=rows)
         nodes[key] = record
         self.state.update({"retail_nodes": {"binding": self.binding(), "nodes": nodes}, "pending_retail_node": None})
         await asyncio.sleep(self.settings.send_delay)
@@ -189,13 +190,13 @@ class RetailPublisher(BotAPIPublisher):
             root_ids = []
             for index in range(2):
                 key = "root:" + str(index)
-                existing = self.nodes().get(key, {}).get("id")
-                root_ids.append(existing or await self.node(key, f"Каталог · часть {index+1}\nРазделы обновляются…", []))
+                existing = self.nodes().get(key, {})
+                root_ids.append(await self.node(key, existing.get("text", f"Каталог · часть {index+1}\nРазделы обновляются…"), existing.get("rows", [])))
             brand_ids = {}
             for brand in self.navigation:
                 key = "brand:" + digest(brand)[:16]
-                existing = self.nodes().get(key, {}).get("id")
-                brand_ids[brand] = existing or await self.node(key, "<b>" + html.escape(brand) + "</b>\nВыбери раздел ниже.", [], brand)
+                existing = self.nodes().get(key, {})
+                brand_ids[brand] = await self.node(key, existing.get("text", "<b>" + html.escape(brand) + "</b>\nВыбери раздел ниже."), existing.get("rows", []), brand)
             changes = await super().publish(pages)
             manifest = self.state.get("published", {}).get("messages", {})
             keyboard_hashes = self.state.get("retail_price_keyboards", {})
