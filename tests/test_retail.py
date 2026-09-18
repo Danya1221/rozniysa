@@ -161,6 +161,38 @@ class RetailAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.state.close()
         self.tmp.cleanup()
 
+    async def test_generated_cover_waits_and_retries_on_telegram_429(self):
+        class FakeResponse:
+            def __init__(self, status, payload):
+                self.status = status
+                self.payload = payload
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                return False
+            async def json(self, content_type=None):
+                return self.payload
+
+        class FakeHTTP:
+            closed = False
+            def __init__(self):
+                self.responses = [
+                    FakeResponse(429, {'ok': False, 'description': 'Too Many Requests: retry after 28',
+                                       'parameters': {'retry_after': 28}}),
+                    FakeResponse(200, {'ok': True, 'result': {'message_id': 777}}),
+                ]
+            def post(self, *args, **kwargs):
+                return self.responses.pop(0)
+
+        publisher = RetailPublisher('TEST', -100123456, self.state, self.settings, self.store)
+        publisher.target = -100123456
+        publisher.http = FakeHTTP()
+        with patch('retail_publisher.cover_bytes', return_value=b'jpeg'), \
+             patch('retail_publisher.asyncio.sleep', new=AsyncMock()) as sleeper:
+            result = await publisher._photo('Apple', 'Apple', {'inline_keyboard': []})
+        self.assertEqual(result['message_id'], 777)
+        sleeper.assert_awaited_once_with(29)
+
     async def test_two_menus_covers_and_price_back_links(self):
         await self.publisher.publish(self.pages)
         nodes = self.publisher.nodes()
