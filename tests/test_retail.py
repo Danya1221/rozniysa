@@ -292,7 +292,8 @@ class RetailAsyncTests(unittest.IsolatedAsyncioTestCase):
         service.active_reader_entries = lambda: iter([(1,first),(1,second)])
         await service.sync()
         catalog = self.store.scan('catalog')
-        self.assertEqual(len(catalog),2)
+        self.assertEqual(len(catalog),3)
+        self.assertIn(RETAIL_TEST_PRODUCT['id'], dict(catalog))
         self.assertFalse(self.store.get('system','catalog')['confirmed'])
 
     async def test_closed_supplier_stale_lower_price_does_not_beat_open_supplier(self):
@@ -317,7 +318,8 @@ class RetailAsyncTests(unittest.IsolatedAsyncioTestCase):
         meta = self.store.get('system','catalog')
         self.assertFalse(meta['confirmed'])
         self.assertLess(meta['checked_at'],time.time()-3600)
-        self.assertEqual(meta['count'],1)
+        self.assertEqual(meta['count'],2)
+        self.assertIsNotNone(self.store.get('catalog', RETAIL_TEST_PRODUCT['id']))
 
     async def test_section_order_reuses_chronological_price_slots(self):
         await self.publisher.publish(self.pages)
