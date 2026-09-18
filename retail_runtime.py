@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from telethon import errors
 
-from prices import select_items
+from prices import Item, merge_lowest, select_items
 from retail_catalog import to_product, dedupe_products, render_prices
 from runtime import SyncService, LoginRequired, timestamp
 
@@ -56,8 +56,32 @@ class RetailSyncService(SyncService):
         checked = min(checks, default=1)
         return bool(confirmed and time.time() - checked < max(1800, self.settings.poll_seconds * 2)), checked
 
+    def retail_cached_items(self):
+        """Use only currently healthy/open sources when at least one is available.
+
+        Closed or failed suppliers must not win the lowest-price merge with stale
+        cached prices. If every source is unavailable, keep the last complete
+        catalog as an unconfirmed fallback for the customer/manager.
+        """
+        cache = self.state.get("sources", {})
+        healthy_groups = []
+        fallback_groups = []
+        for slot in (1, 2):
+            if slot == 2 and not self.account_configured(2):
+                continue
+            for source in self._slot_sources(slot):
+                value = cache.get(self.source_cache_key(source, slot), {})
+                raw_items = value.get("items") or []
+                if not raw_items:
+                    continue
+                group = [Item.from_dict(item) for item in raw_items]
+                fallback_groups.append(group)
+                if value.get("status") == "open" and not value.get("error"):
+                    healthy_groups.append(group)
+        return merge_lowest(healthy_groups if healthy_groups else fallback_groups)
+
     async def render(self, closed=False, items=None):
-        selected = select_items(self.cached_items(include_closed=True) if items is None else items,
+        selected = select_items(self.retail_cached_items() if items is None else items,
                                 self.settings, self.options())
         products = dedupe_products([to_product(item, self.settings, self.options()) for item in selected])
         pages, navigation = render_prices(products, self.order_username, self.options().get("physical_order", []))
