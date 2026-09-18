@@ -58,6 +58,13 @@ class BridgeTests(unittest.TestCase):
             self.bridge.put_catalog([PRODUCT],confirmed=True)
         self.assertEqual(len(self.opener.bodies),1)
 
+    def test_http_400_surfaces_checkout_validation_detail(self):
+        body=BytesIO(json.dumps({'error':'invalid_catalog','detail':'Duplicate product ID: deadbeef'}).encode())
+        self.opener.failures=[HTTPError('https://checkout.example.test',400,'Bad Request',{},body)]
+        with self.assertRaisesRegex(CatalogBridgeError,'Duplicate product ID'):
+            self.bridge.put_catalog([PRODUCT],confirmed=True)
+        self.assertEqual(len(self.opener.bodies),1)
+
     def test_network_failure_is_reported_without_secret_or_url(self):
         self.opener.failures=[URLError(KEY),URLError(KEY)]
         with self.assertRaises(CatalogBridgeError) as result:
