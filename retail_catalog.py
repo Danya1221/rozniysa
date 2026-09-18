@@ -60,6 +60,24 @@ def dedupe_products(products):
     return list(unique.values())
 
 
+def dedupe_products(products):
+    """Collapse customer-visible ID collisions, keeping the lowest retail price."""
+    unique = OrderedDict()
+    for product in products:
+        current = unique.get(product["id"])
+        if current is None:
+            unique[product["id"]] = product
+            continue
+        try:
+            current_price = Decimal(current["price"])
+            candidate_price = Decimal(product["price"])
+        except Exception as exc:
+            raise ValueError("Некорректная цена у повторяющейся позиции") from exc
+        if candidate_price < current_price:
+            unique[product["id"]] = product
+    return list(unique.values())
+
+
 def section_order(value):
     presets = ["iPhone 11", "iPhone 12", "iPhone 13", "iPhone 14", "iPhone 15", "iPhone 16", "iPhone 17",
                "Apple Watch", "MacBook / iMac", "iPad", "AirPods", "Аксессуары Apple", "Galaxy A", "Galaxy S",
