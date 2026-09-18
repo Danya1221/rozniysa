@@ -82,6 +82,12 @@ class BridgeTests(unittest.TestCase):
         self.bridge.put_catalog([PRODUCT],confirmed=True)
         self.assertEqual(self.opener.bodies[-1]['catalog_url'],'https://t.me/c/123/4')
 
+    def test_invalid_saved_catalog_url_is_cleared_and_snapshot_still_sends(self):
+        self.store.set('bridge','catalog_url','https://evil.test/not-telegram')
+        self.bridge.put_catalog([PRODUCT], confirmed=True)
+        self.assertNotIn('catalog_url', self.opener.bodies[-1])
+        self.assertEqual(self.store.get('bridge','catalog_url',''), '')
+
     def test_revisions_survive_restart_and_clock_rollback(self):
         with patch('catalog_bridge.time.time_ns',return_value=100_000):
             self.bridge.put_catalog([PRODUCT],confirmed=True)
