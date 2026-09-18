@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 from config import Settings, Source
 from prices import parse_documents, select_items, Item, ParseResult, activation_state, units
-from retail_catalog import to_product, render_prices, cover_bytes
+from retail_catalog import to_product, dedupe_products, render_prices, cover_bytes
 from retail_publisher import RetailPublisher
 from retail_runtime import RetailSyncService
 from retail_store import RetailStore
@@ -60,6 +60,15 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(before['id'], after['id'])
         self.assertNotEqual(before['price'], after['price'])
         self.assertLess(len('p_' + before['id']), 64)
+
+    def test_customer_visible_id_collision_keeps_lowest_price_once(self):
+        items = parse_documents(['16 Pro 128 Desert CPO 🇺🇸 (Ориг. Упаковка iPhone) — 77300\n16 Pro 128 Desert CPO 🇺🇸 — 76800']).items
+        products = [to_product(item, Settings()) for item in items]
+        self.assertEqual(len(products), 2)
+        self.assertEqual(products[0]['id'], products[1]['id'])
+        unique = dedupe_products(products)
+        self.assertEqual(len(unique), 1)
+        self.assertEqual(unique[0]['price'], '76800')
 
     def test_every_position_has_link_and_large_section_paginates(self):
         items = parse_documents([f'17 256 Colour{i} (1Sim+eSim) — {79800+i}' for i in range(250)]).items
