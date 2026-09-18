@@ -7,9 +7,9 @@ from zoneinfo import ZoneInfo
 
 from telethon import errors
 
-from prices import Item, merge_lowest, select_items
+from prices import Item, select_items
 from retail_catalog import to_product, dedupe_products, render_prices
-from runtime import SyncService, LoginRequired, timestamp
+from runtime import SyncService, LoginRequired, merge_lowest, timestamp
 
 log = logging.getLogger(__name__)
 
