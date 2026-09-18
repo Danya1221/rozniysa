@@ -104,7 +104,13 @@ class CatalogBridge:
                       "checked_at": time.time() if checked_at is None else checked_at}
             url = self.local.get("bridge", "catalog_url", "")
             if url:
-                values["catalog_url"] = url
+                parsed = urlsplit(str(url))
+                if parsed.scheme == "https" and parsed.netloc == "t.me" and parsed.path.strip("/"):
+                    values["catalog_url"] = url
+                else:
+                    # A stale/hand-edited navigation URL must never block price sync.
+                    self.local.set("bridge", "catalog_url", "")
+                    log.warning("Некорректная сохранённая ссылка каталога очищена; прайс отправляется без неё")
             result = self._send(self._payload("snapshot", **values))
             return result.get("cancelled_drafts", 0)
 
