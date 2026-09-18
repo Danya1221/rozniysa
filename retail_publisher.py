@@ -119,22 +119,52 @@ class RetailPublisher(BotAPIPublisher):
         if photo_id:
             return await self.api("sendPhoto", chat_id=self.target, photo=photo_id,
                                   caption=caption, parse_mode="HTML", reply_markup=keyboard)
-        if self.http is None or self.http.closed:
-            self.http = self._new_http()
-        form = aiohttp.FormData()
-        form.add_field("chat_id", str(self.target))
-        form.add_field("caption", caption)
-        form.add_field("parse_mode", "HTML")
-        form.add_field("reply_markup", json.dumps(keyboard, ensure_ascii=False))
-        form.add_field("photo", await asyncio.to_thread(cover_bytes, brand), filename="cover.jpg", content_type="image/jpeg")
-        try:
-            async with self.http.post(self.base + "/sendPhoto", data=form) as response:
-                result = await response.json(content_type=None)
-        except (aiohttp.ClientError, asyncio.TimeoutError):
-            raise RuntimeError("Telegram не подтвердил отправку обложки; повтор только после проверки истории") from None
-        if not result.get("ok"):
+
+        photo = await asyncio.to_thread(cover_bytes, brand)
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            if self.http is None or self.http.closed:
+                self.http = self._new_http()
+
+            form = aiohttp.FormData()
+            form.add_field("chat_id", str(self.target))
+            form.add_field("caption", caption)
+            form.add_field("parse_mode", "HTML")
+            form.add_field("reply_markup", json.dumps(keyboard, ensure_ascii=False))
+            form.add_field("photo", photo, filename="cover.jpg", content_type="image/jpeg")
+
+            try:
+                async with self.http.post(self.base + "/sendPhoto", data=form) as response:
+                    result = await response.json(content_type=None)
+                    status = response.status
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                # sendPhoto has an ambiguous result after a transport failure:
+                # Telegram may already have accepted the image, so never blindly
+                # repeat it and risk a duplicate cover post.
+                raise RuntimeError(
+                    "Telegram не подтвердил отправку обложки; повтор только после проверки истории"
+                ) from exc
+
+            if result.get("ok"):
+                return result["result"]
+
+            parameters = result.get("parameters") or {}
+            retry_after = parameters.get("retry_after")
+            if (status == 429 or retry_after is not None) and attempt < max_attempts - 1:
+                try:
+                    wait_seconds = max(1, int(retry_after or 1))
+                except (TypeError, ValueError):
+                    wait_seconds = 1
+                await asyncio.sleep(wait_seconds + 1)
+                continue
+
+            if status in {500, 502, 503, 504} and attempt < max_attempts - 1:
+                await asyncio.sleep(min(1 + attempt, 3))
+                continue
+
             raise RuntimeError(str(result.get("description", "Не удалось отправить обложку")))
-        return result["result"]
+
+        raise RuntimeError("Telegram не принял обложку после нескольких попыток")
 
     async def node(self, key, text, rows, brand=None):
         nodes = self.nodes()
