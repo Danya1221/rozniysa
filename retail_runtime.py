@@ -9,10 +9,23 @@ from telethon import errors
 
 from prices import Item, select_items
 from retail_catalog import to_product, dedupe_products, render_prices
+from retail_store import stable_id
 from runtime import SyncService, LoginRequired, merge_lowest, timestamp
 
 log = logging.getLogger(__name__)
-RETAIL_BUILD = "retail-2026.09.18-1917"
+RETAIL_BUILD = "retail-2026.09.18-1935-test"
+RETAIL_TEST_PRODUCT = {
+    "id": stable_id("temporary-retail-test|iphone-17|256gb|blue|hybrid"),
+    "title": "iPhone 17 256GB Blue Sim+eSim",
+    "price": "150000",
+    "currency": "RUB",
+    "brand": "Apple",
+    "section": "iPhone 17",
+    "model": "iPhone 17",
+    "sim": "hybrid",
+    "condition": "inactive",
+    "storage_rank": 256,
+}
 
 
 class RetailSyncService(SyncService):
@@ -88,7 +101,12 @@ class RetailSyncService(SyncService):
     async def render(self, closed=False, items=None):
         selected = select_items(self.retail_cached_items() if items is None else items,
                                 self.settings, self.options())
-        products = dedupe_products([to_product(item, self.settings, self.options()) for item in selected])
+        products = [to_product(item, self.settings, self.options()) for item in selected]
+        # Temporary end-to-end checkout probe requested by the owner. It is a real
+        # catalog row with a real deep-link, but its retail price is intentionally
+        # fixed and does not depend on supplier markup.
+        products.append(dict(RETAIL_TEST_PRODUCT))
+        products = dedupe_products(products)
         pages, navigation = render_prices(products, self.order_username, self.options().get("physical_order", []))
         if sum(content.count('<a href=') for content in pages.values()) != len(products):
             raise RuntimeError("Количество товаров в базе и сообщениях не совпало; публикация остановлена")
