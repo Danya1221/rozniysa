@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from telethon import errors
 
 from prices import select_items
-from retail_catalog import to_product, render_prices
+from retail_catalog import to_product, dedupe_products, render_prices
 from runtime import SyncService, LoginRequired, timestamp
 
 log = logging.getLogger(__name__)
@@ -59,7 +59,7 @@ class RetailSyncService(SyncService):
     async def render(self, closed=False, items=None):
         selected = select_items(self.cached_items(include_closed=True) if items is None else items,
                                 self.settings, self.options())
-        products = [to_product(item, self.settings, self.options()) for item in selected]
+        products = dedupe_products([to_product(item, self.settings, self.options()) for item in selected])
         pages, navigation = render_prices(products, self.order_username, self.options().get("physical_order", []))
         if sum(content.count('<a href=') for content in pages.values()) != len(products):
             raise RuntimeError("Количество товаров в базе и сообщениях не совпало; публикация остановлена")
