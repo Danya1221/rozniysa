@@ -57,14 +57,14 @@ class RetailSyncService(SyncService):
         return bool(confirmed and time.time() - checked < max(1800, self.settings.poll_seconds * 2)), checked
 
     def retail_cached_items(self):
-        """Use only currently healthy/open sources when at least one is available.
+        """Exclude explicitly closed suppliers while at least one source is open.
 
-        Closed or failed suppliers must not win the lowest-price merge with stale
-        cached prices. If every source is unavailable, keep the last complete
+        Transient read failures retain their last open snapshot (unconfirmed), as
+        before. If every source is closed/unavailable, keep the last complete
         catalog as an unconfirmed fallback for the customer/manager.
         """
         cache = self.state.get("sources", {})
-        healthy_groups = []
+        open_groups = []
         fallback_groups = []
         for slot in (1, 2):
             if slot == 2 and not self.account_configured(2):
@@ -76,9 +76,12 @@ class RetailSyncService(SyncService):
                     continue
                 group = [Item.from_dict(item) for item in raw_items]
                 fallback_groups.append(group)
-                if value.get("status") == "open" and not value.get("error"):
-                    healthy_groups.append(group)
-        return merge_lowest(healthy_groups if healthy_groups else fallback_groups)
+                # Explicitly closed suppliers are excluded while any supplier is
+                # still open. A transient read error keeps its last open snapshot,
+                # but freshness() marks the resulting catalog unconfirmed.
+                if value.get("status") == "open":
+                    open_groups.append(group)
+        return merge_lowest(open_groups if open_groups else fallback_groups)
 
     async def render(self, closed=False, items=None):
         selected = select_items(self.retail_cached_items() if items is None else items,
