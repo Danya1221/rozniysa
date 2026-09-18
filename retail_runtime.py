@@ -101,21 +101,28 @@ class RetailSyncService(SyncService):
     async def render(self, closed=False, items=None):
         selected = select_items(self.retail_cached_items() if items is None else items,
                                 self.settings, self.options())
-        products = [to_product(item, self.settings, self.options()) for item in selected]
-        # Temporary end-to-end checkout probe requested by the owner. It is a real
-        # catalog row with a real deep-link, but its retail price is intentionally
-        # fixed and does not depend on supplier markup.
-        products.append(dict(RETAIL_TEST_PRODUCT))
-        products = dedupe_products(products)
+        products = dedupe_products([to_product(item, self.settings, self.options()) for item in selected])
         pages, navigation = render_prices(products, self.order_username, self.options().get("physical_order", []))
-        if sum(content.count('<a href=') for content in pages.values()) != len(products):
+
+        # Temporary end-to-end checkout probe requested by the owner. Keep it in a
+        # completely separate Telegram message, but send the same product to zayavki
+        # so tapping the row exercises the real retail -> checkout flow.
+        test_product = dict(RETAIL_TEST_PRODUCT)
+        test_url = f'https://t.me/{self.order_username}?start=p_{test_product["id"]}'
+        pages["__checkout_test__"] = (
+            "<b>ТЕСТОВАЯ ПОЗИЦИЯ</b>\n\n"
+            f'<a href="{test_url}">iPhone 17 256GB Blue Sim+eSim — 150 000</a>'
+        )
+        catalog_products = dedupe_products(products + [test_product])
+
+        if sum(content.count('<a href=') for content in pages.values()) != len(catalog_products):
             raise RuntimeError("Количество товаров в базе и сообщениях не совпало; публикация остановлена")
         confirmed, checked = self.freshness()
-        await asyncio.to_thread(self.retail.put_catalog, products, confirmed=confirmed and not closed, checked_at=checked)
+        await asyncio.to_thread(self.retail.put_catalog, catalog_products, confirmed=confirmed and not closed, checked_at=checked)
         self.publisher.navigation = navigation
         changes = await self.publisher.publish(pages)
-        self.state.update({"last_publish": timestamp(), "published_items": len(products)})
-        return len(products), changes
+        self.state.update({"last_publish": timestamp(), "published_items": len(catalog_products)})
+        return len(catalog_products), changes
 
     async def pause(self):
         self.set_option("enabled", False)
