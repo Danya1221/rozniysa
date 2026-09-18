@@ -37,6 +37,18 @@ def validate_config(url, key):
         raise ValueError("SYNC_API_KEY: одинаковый секрет из 32–128 латинских букв, цифр, _ или - в обоих проектах")
 
 
+def http_error_detail(exc):
+    """Read a small authenticated API error body without exposing secrets."""
+    try:
+        payload = json.loads(exc.read(4096).decode("utf-8", "replace"))
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    detail = payload.get("detail") or payload.get("error") or ""
+    return str(detail).strip()[:500]
+
+
 class CatalogBridge:
     def __init__(self, local_store, url, key, *, timeout=25, attempts=3):
         validate_config(url, key)
@@ -72,12 +84,14 @@ class CatalogBridge:
                 self.local.set("bridge", "status", {"ok": True, "attempted_at": time.time(), "message": "Каталог передан в оформление"})
                 return result
             except HTTPError as exc:
+                detail = http_error_detail(exc)
                 if exc.code in {401, 403}:
                     raise self._error("Нет доступа к API оформления. Проверь одинаковый SYNC_API_KEY") from None
                 if exc.code == 409:
                     raise self._error("API оформления уже принял более новое обновление. Запроси прайс ещё раз") from None
                 if exc.code < 500 and exc.code != 429:
-                    raise self._error(f"API оформления отклонил каталог (HTTP {exc.code}). Проверь адрес и версии обоих проектов") from None
+                    suffix = f": {detail}" if detail else ""
+                    raise self._error(f"API оформления отклонил каталог (HTTP {exc.code}){suffix}") from None
             except (URLError, OSError, TimeoutError, HTTPException, ValueError):
                 pass
             if attempt + 1 < self.attempts:
