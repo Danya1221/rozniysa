@@ -256,6 +256,18 @@ class RetailAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(catalog),2)
         self.assertFalse(self.store.get('system','catalog')['confirmed'])
 
+    async def test_closed_supplier_stale_lower_price_does_not_beat_open_supplier(self):
+        service = RetailSyncService(None, self.settings, self.state, self.store, 'checkout_test_bot')
+        cheap_closed = parse_documents(['17 256 Black (eSim) — 70000']).items
+        fresh_open = parse_documents(['17 256 Black (eSim) — 80000']).items
+        self.state.set('sources', {
+            '@first': {'status':'closed','checked':timestamp(),'items':[i.to_dict() for i in cheap_closed], 'error':None},
+            '@second': {'status':'open','checked':timestamp(),'items':[i.to_dict() for i in fresh_open], 'error':None},
+        })
+        selected = service.retail_cached_items()
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0].price, Decimal('80000'))
+
     async def test_closed_supplier_keeps_catalog_and_no_fake_freshness(self):
         service = RetailSyncService(None, self.settings, self.state, self.store, 'checkout_test_bot')
         service.publisher = self.publisher
