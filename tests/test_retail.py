@@ -12,7 +12,7 @@ from config import Settings, Source
 from prices import parse_documents, select_items, Item, ParseResult, activation_state, units
 from retail_catalog import to_product, dedupe_products, render_prices, cover_bytes
 from retail_publisher import RetailPublisher
-from retail_runtime import RetailSyncService
+from retail_runtime import RetailSyncService, RETAIL_TEST_PRODUCT
 from retail_store import RetailStore
 from runtime import timestamp
 from state import StateStore
@@ -87,6 +87,13 @@ class CatalogTests(unittest.TestCase):
         self.assertIn('SIM + eSIM', text)
         self.assertIn('Не активированное', text)
         self.assertNotIn('Статус неизвестен', text)
+
+    def test_temporary_checkout_item_is_clickable_at_exact_price(self):
+        pages, _ = render_prices([dict(RETAIL_TEST_PRODUCT)], 'checkout_test_bot')
+        text = '\n'.join(pages.values())
+        self.assertIn('iPhone 17 256GB Blue Sim+eSim — 150 000', text)
+        self.assertIn('?start=p_' + RETAIL_TEST_PRODUCT['id'], text)
+        self.assertEqual(RETAIL_TEST_PRODUCT['section'], 'iPhone 17')
 
     def test_bad_checkout_username_stops_publication(self):
         with self.assertRaises(ValueError):
