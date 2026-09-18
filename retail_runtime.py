@@ -12,6 +12,7 @@ from retail_catalog import to_product, dedupe_products, render_prices
 from runtime import SyncService, LoginRequired, merge_lowest, timestamp
 
 log = logging.getLogger(__name__)
+RETAIL_BUILD = "retail-2026.09.18-1917"
 
 
 class RetailSyncService(SyncService):
@@ -24,6 +25,7 @@ class RetailSyncService(SyncService):
         if hasattr(self.retail, "local"):
             bridge = self.retail.local.get("bridge", "status", {})
             text += "\nСвязь с оформлением: " + bridge.get("message", "ожидает передачи каталога")
+        text += "\nСборка: " + RETAIL_BUILD
         return text
 
     async def connect_account(self, slot):
