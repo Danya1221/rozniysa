@@ -49,6 +49,17 @@ def to_product(item, settings, options=None):
             "storage_rank": iphone_storage_rank(item) if iphone_model(title) else 0}
 
 
+def dedupe_products(products):
+    """Collapse customer-visible ID collisions, keeping the lowest current price."""
+    unique = OrderedDict()
+    for product in products:
+        product_id = product["id"]
+        current = unique.get(product_id)
+        if current is None or Decimal(product["price"]) < Decimal(current["price"]):
+            unique[product_id] = product
+    return list(unique.values())
+
+
 def section_order(value):
     presets = ["iPhone 11", "iPhone 12", "iPhone 13", "iPhone 14", "iPhone 15", "iPhone 16", "iPhone 17",
                "Apple Watch", "MacBook / iMac", "iPad", "AirPods", "Аксессуары Apple", "Galaxy A", "Galaxy S",
