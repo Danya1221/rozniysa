@@ -134,16 +134,31 @@ def cover_bytes(brand):
     for x, y, w, h in ((790,110,190,370), (1000,230,110,220), (660,275,105,185)):
         draw.rounded_rectangle((x,y,x+w,y+h), radius=26, fill=(35,43,58), outline=accent, width=3)
         draw.rounded_rectangle((x+8,y+8,x+w-8,y+h-8), radius=20, fill=(23,31,44))
-    try:
-        large = ImageFont.truetype("DejaVuSans.ttf", 78 if len(brand) < 14 else 48)
-        small = ImageFont.truetype("DejaVuSans.ttf", 24)
-    except OSError:
-        large = small = ImageFont.load_default(size=32)
-    draw.rounded_rectangle((65,83,145,91), radius=4, fill=accent)
-    draw.text((65,170), brand[:30], font=large, fill="white")
-    draw.text((68,295), "ВЫБЕРИ СВОЁ УСТРОЙСТВО", font=small, fill=(162,176,193))
-    draw.line((65,500,535,500), fill=(57,69,88), width=2)
-    draw.text((68,527), "ТЕХНИКА · РОЗНИЦА", font=small, fill=accent)
+    font_candidates = (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "DejaVuSans.ttf",
+    )
+    font_path = next((path for path in font_candidates if __import__("os").path.exists(path)), None)
+    if font_path:
+        large = ImageFont.truetype(font_path, 92 if len(brand) < 14 else 58)
+        medium = ImageFont.truetype(font_path, 30)
+        small = ImageFont.truetype(font_path, 24)
+    else:
+        # Last-resort fallback: keep the image readable instead of drawing tofu boxes.
+        large = ImageFont.load_default(size=42)
+        medium = ImageFont.load_default(size=24)
+        small = ImageFont.load_default(size=20)
+
+    draw.rounded_rectangle((65,83,165,92), radius=4, fill=accent)
+    draw.text((65,155), brand[:30], font=large, fill="white")
+    if font_path:
+        draw.text((68,290), "ВЫБЕРИ СВОЁ УСТРОЙСТВО", font=medium, fill=(185,196,210))
+        draw.line((65,500,535,500), fill=(57,69,88), width=2)
+        draw.text((68,525), "ТЕХНИКА · РОЗНИЦА", font=small, fill=accent)
+    else:
+        draw.line((65,500,535,500), fill=(57,69,88), width=2)
+        draw.text((68,525), "RETAIL CATALOG", font=small, fill=accent)
     stream = io.BytesIO()
     image.save(stream, format="JPEG", quality=88)
     return stream.getvalue()
