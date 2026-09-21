@@ -52,8 +52,8 @@ def brand_section(item):
             (r"\bA\s*\d{2,3}\b", "Galaxy A"),
             # Keep S26 pages semantically split when stock is large:
             # base/FE first, then Plus/Ultra.
-            (r"\bS\s*26\s*(?:FE)?\b", "S26 / S26 FE"),
-            (r"\bS\s*26\s*(?:\+|Plus|Ultra)\b", "S26+ / S26 Ultra"),
+            (r"\bS\s*26\s*(?:\+(?=\s|$)|Plus\b|Ultra\b)", "S26+ / S26 Ultra"),
+            (r"\bS\s*26(?!\s*(?:\+|Plus\b|Ultra\b))(?:\s*FE\b)?\b", "S26 / S26 FE"),
             (r"\bS\s*25(?:\s*(?:Ultra|Edge|FE|\+|Plus))?\b", "S25"),
             (r"\bS\s*\d{2}\b", "Galaxy S"),
         ]:
