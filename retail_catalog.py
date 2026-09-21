@@ -46,8 +46,7 @@ def brand_section(item):
     if block.startswith("Samsung"):
         section = "Samsung"
         for pattern, label in [
-            (r"\bFold\b", "Fold"),
-            (r"\bFlip\b", "Flip"),
+            (r"\b(?:Fold|Flip)\b", "Fold / Flip"),
             (r"\bTab\b", "Планшеты"),
             (r"\b(?:Watch|Buds)\b", "Часы / Наушники"),
             (r"\bA\s*\d{2,3}\b", "Galaxy A"),
@@ -95,7 +94,7 @@ def section_order(value):
     presets = [
         "Apple Watch", "AirPods", "iPad", "MacBook / iMac", "Mac mini",
         "Mac Studio", "Аксессуары Apple", "Galaxy A", "S25", "S26", "Galaxy S",
-        "Fold", "Flip", "Планшеты", "Часы / Наушники",
+        "Fold / Flip", "Планшеты", "Часы / Наушники",
     ]
     return (1, presets.index(value), natural(value)) if value in presets else (2, 0, natural(value))
 

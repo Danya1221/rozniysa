@@ -75,13 +75,13 @@ Samsung Galaxy Buds 4 Black — 20000''']).items
         self.assertEqual([p['brand'] for p in products], ['Samsung'] * 4)
         self.assertEqual(
             [p['section'] for p in products],
-            ['Fold', 'Flip', 'Часы / Наушники', 'Часы / Наушники'],
+            ['Fold / Flip', 'Fold / Flip', 'Часы / Наушники', 'Часы / Наушники'],
         )
 
         _, navigation = render_prices(products, 'checkout_test_bot')
         self.assertEqual(
             [entry['section'] for entry in navigation['Samsung']],
-            ['Fold', 'Flip', 'Часы / Наушники'],
+            ['Fold / Flip', 'Часы / Наушники'],
         )
 
     def test_action_cameras_share_cover_but_keep_global_brands_separate(self):
