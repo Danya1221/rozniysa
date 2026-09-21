@@ -14,7 +14,24 @@ def natural(value):
     return tuple((0, int(p)) if p.isdigit() else (1, p.casefold()) for p in re.split(r"(\d+)", value))
 
 
+def action_camera_section(item):
+    """Retail-only split: one Action Cameras cover, separate brand buttons."""
+    title = item.title.casefold()
+    block = (item.block or "").casefold()
+    if re.search(r"\bdji\b", title) or block == "dji":
+        return "DJI"
+    if re.search(r"\binsta\s*360\b|\binsta360\b", title) or block == "insta360":
+        return "Insta360"
+    if re.search(r"\bgopro\b", title) or block == "gopro":
+        return "GoPro"
+    return ""
+
+
 def brand_section(item):
+    action_brand = action_camera_section(item)
+    if action_brand:
+        return "Экшн-камеры", action_brand
+
     model = iphone_model(item.title)
     if item.block in {"CPO", "ASIS"}:
         return "Apple", item.block
@@ -76,7 +93,7 @@ def section_order(value):
 
 
 def brand_order(value):
-    names = ["Apple", "Samsung", "Xiaomi", "Honor", "Huawei", "Realme", "Tecno"]
+    names = ["Apple", "Samsung", "Xiaomi", "Honor", "Huawei", "Realme", "Tecno", "Экшн-камеры"]
     return names.index(value) if value in names else len(names), natural(value)
 
 

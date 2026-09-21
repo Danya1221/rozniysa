@@ -45,6 +45,27 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(sum(p['section'] == 'MacBook / iMac' for p in products), 2)
         self.assertTrue(all('Упак' not in p['title'] for p in products))
 
+    def test_action_cameras_share_cover_but_keep_global_brands_separate(self):
+        items = parse_documents(['''DJI Osmo Action 5 Pro — 41000
+Insta360 X5 — 52000
+GoPro Hero 13 Black — 47000''']).items
+        products = [to_product(item, Settings()) for item in items]
+
+        self.assertEqual([p['brand'] for p in products], ['Экшн-камеры'] * 3)
+        self.assertEqual([p['section'] for p in products], ['DJI', 'Insta360', 'GoPro'])
+
+        pages, navigation = render_prices(products, 'checkout_test_bot')
+        self.assertIn('Экшн-камеры', navigation)
+        self.assertEqual(
+            [entry['section'] for entry in navigation['Экшн-камеры']],
+            ['DJI', 'GoPro', 'Insta360'],
+        )
+        text = '\n'.join(pages.values())
+        self.assertIn('<b>DJI</b>', text)
+        self.assertIn('<b>Insta360</b>', text)
+        self.assertIn('<b>GoPro</b>', text)
+        self.assertNotIn('<b>DJI / Insta360</b>', text)
+
     def test_activation_header_and_pure_esim_are_distinct(self):
         items = parse_documents([SAMPLE]).items
         self.assertEqual(items[0].sim, 'hybrid')
