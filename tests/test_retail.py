@@ -205,6 +205,62 @@ class RetailAsyncTests(unittest.IsolatedAsyncioTestCase):
             if m in {'editMessageCaption','editMessageText'}:
                 self.assertTrue(all(len(row) <= 2 for row in p.get('reply_markup',{}).get('inline_keyboard',[])))
 
+    async def test_legacy_real_group_layout_is_forced_to_rebuild_once(self):
+        items = parse_documents([
+            "iPhone 12 128 Black — 45000\n"
+            "iPhone 17 256 Black — 80000\n"
+            "Samsung Galaxy S26 12/256 Black — 90000"
+        ]).items
+        products = [to_product(item, self.settings) for item in items]
+        pages, navigation = render_prices(products, 'checkout_test_bot')
+        self.publisher.navigation = navigation
+
+        # Simulate the real broken production chronology:
+        # all covers first, price messages later, roots at the end.
+        await self.publisher.ensure_target()
+        apple_key = "brand:" + __import__('hashlib').sha256("Apple".encode()).hexdigest()[:16]
+        samsung_key = "brand:" + __import__('hashlib').sha256("Samsung".encode()).hexdigest()[:16]
+        self.publisher.messages = {
+            11: {'caption': '<b>Apple</b>'},
+            12: {'caption': '<b>Samsung</b>'},
+            20: {'text': next(iter(pages.values()))},
+            21: {'text': list(pages.values())[-1]},
+            30: {'text': '<b>Каталог · другие бренды</b>'},
+            31: {'text': 'Каталог техники'},
+        }
+        self.publisher.counter = 31
+        page_keys = list(pages)
+        self.state.set('published', {'binding': self.publisher.binding(), 'messages': {
+            page_keys[0]: {'id': 20, 'hash': 'old', 'content': pages[page_keys[0]]},
+            page_keys[-1]: {'id': 21, 'hash': 'old', 'content': pages[page_keys[-1]]},
+        }})
+        self.state.set('retail_nodes', {'binding': self.publisher.binding(), 'nodes': {
+            apple_key: {'id': 11, 'text': '<b>Apple</b>', 'photo': True},
+            samsung_key: {'id': 12, 'text': '<b>Samsung</b>', 'photo': True},
+            'root:1': {'id': 30, 'text': '<b>Каталог · другие бренды</b>', 'photo': False},
+            'root:0': {'id': 31, 'text': 'Каталог техники', 'photo': False},
+        }})
+        self.state.set('retail_layout_version', 2)
+
+        await self.publisher.publish(pages)
+
+        self.assertEqual(self.state.get('retail_layout_version'), 3)
+        nodes = self.publisher.nodes()
+        manifest = self.state.get('published')['messages']
+        desired = self.publisher._desired_units(pages)
+        ids = [self.publisher._unit_id(unit, manifest, nodes) for unit in desired]
+        self.assertEqual(ids, sorted(ids))
+        self.assertLess(
+            next(record['id'] for key, record in nodes.items()
+                 if key.startswith('brand:') and record.get('text', '').startswith('<b>Apple</b>')),
+            min(manifest[key]['id'] for section in navigation['Apple'] for key in section['keys'])
+        )
+        self.assertLess(
+            max(manifest[key]['id'] for section in navigation['Apple'] for key in section['keys']),
+            next(record['id'] for key, record in nodes.items()
+                 if key.startswith('brand:') and record.get('text', '').startswith('<b>Samsung</b>'))
+        )
+
     async def test_brand_cover_is_immediately_before_its_price_group(self):
         items = parse_documents([
             "iPhone 11 128 Black — 40000\n"
