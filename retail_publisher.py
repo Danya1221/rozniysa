@@ -648,6 +648,9 @@ class RetailPublisher(BotAPIPublisher):
                 {k: v for k, v in keyboard_hashes.items() if k in manifest},
             )
             self.state.set("retail_layout_version", 3)
+            # The just-published manifest is already known to exist. Do not run
+            # an immediate full existence probe on the next unchanged sync.
+            self.state.set("retail_probe", time.time())
 
             pinned = {"binding": binding, "id": root0_id}
             if self.state.get("retail_pinned") != pinned:
