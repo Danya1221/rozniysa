@@ -205,6 +205,80 @@ class RetailAsyncTests(unittest.IsolatedAsyncioTestCase):
             if m in {'editMessageCaption','editMessageText'}:
                 self.assertTrue(all(len(row) <= 2 for row in p.get('reply_markup',{}).get('inline_keyboard',[])))
 
+    async def test_brand_cover_is_immediately_before_its_price_group(self):
+        items = parse_documents([
+            "iPhone 11 128 Black — 40000\n"
+            "iPhone 18 256 Blue — 150000\n"
+            "Apple Watch Ultra 3 49mm Black — 70000\n"
+            "Samsung Galaxy S26 12/256 Black — 90000\n"
+            "Samsung Buds 4 Black — 20000"
+        ]).items
+        products = [to_product(item, self.settings) for item in items]
+        pages, navigation = render_prices(products, 'checkout_test_bot')
+        self.publisher.navigation = navigation
+
+        await self.publisher.publish(pages)
+
+        nodes = self.publisher.nodes()
+        manifest = self.state.get('published')['messages']
+
+        def brand_id(name):
+            return next(
+                record['id'] for key, record in nodes.items()
+                if key.startswith('brand:') and record.get('text', '').startswith('<b>' + name + '</b>')
+            )
+
+        apple_keys = [
+            key for section in navigation['Apple'] for key in section['keys']
+        ]
+        samsung_keys = [
+            key for section in navigation['Samsung'] for key in section['keys']
+        ]
+        apple_ids = [manifest[key]['id'] for key in apple_keys]
+        samsung_ids = [manifest[key]['id'] for key in samsung_keys]
+
+        self.assertLess(brand_id('Apple'), min(apple_ids))
+        self.assertLess(max(apple_ids), brand_id('Samsung'))
+        self.assertLess(brand_id('Samsung'), min(samsung_ids))
+        self.assertLess(max(samsung_ids), nodes['root:1']['id'])
+        self.assertLess(nodes['root:1']['id'], nodes['root:0']['id'])
+
+    async def test_apple_cover_buttons_jump_to_iphone_generations_below(self):
+        items = parse_documents([
+            "iPhone 11 128 Black — 40000\n"
+            "iPhone 12 128 White — 45000\n"
+            "iPhone 17 256 Black — 80000\n"
+            "iPhone 18 256 Blue — 150000"
+        ]).items
+        products = [to_product(item, self.settings) for item in items]
+        pages, navigation = render_prices(products, 'checkout_test_bot')
+        self.publisher.navigation = navigation
+
+        await self.publisher.publish(pages)
+
+        nodes = self.publisher.nodes()
+        apple = next(
+            record for key, record in nodes.items()
+            if key.startswith('brand:') and record.get('text', '').startswith('<b>Apple</b>')
+        )
+        labels = [
+            button['text']
+            for row in apple['rows']
+            for button in row
+            if button['text'] != '← Все бренды'
+        ]
+        self.assertEqual(labels[:4], ['iPhone 11', 'iPhone 12', 'iPhone 17', 'iPhone 18'])
+
+        manifest = self.state.get('published')['messages']
+        expected = {}
+        for section in navigation['Apple']:
+            if section['keys']:
+                expected[section['section']] = manifest[section['keys'][0]]['id']
+        for row in apple['rows']:
+            for button in row:
+                if button['text'] in expected:
+                    self.assertTrue(button['url'].endswith('/' + str(expected[button['text']])))
+
     async def test_main_catalog_is_physically_last_message(self):
         await self.publisher.publish(self.pages)
         nodes = self.publisher.nodes()
