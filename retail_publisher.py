@@ -302,72 +302,52 @@ class RetailPublisher(BotAPIPublisher):
         self.state.set("retail_probe", 0)
         return 0
 
+    async def _drop_root_nodes(self):
+        """Delete the two public catalog roots so they can be recreated at the end."""
+        nodes = self.nodes()
+        changed = False
+        for key in ("root:0", "root:1"):
+            record = nodes.get(key) or {}
+            if record.get("id"):
+                try:
+                    await self._delete(record["id"])
+                except RuntimeError as exc:
+                    if not missing(exc):
+                        raise
+                changed = True
+            nodes.pop(key, None)
+        if changed:
+            self.save_nodes(nodes)
+            self.state.set("retail_pinned", None)
+
     async def publish(self, pages):
         async with self.layout_lock:
             await self.ensure_target()
             if not message_link(self.target, 1):
                 raise RuntimeError("Для переходов по разделам выбери канал или супергруппу Telegram")
             await self.recover_pending()
-            root_ids = []
-            for index in range(2):
-                key = "root:" + str(index)
-                existing = self.nodes().get(key, {})
-                root_ids.append(await self.node(key, existing.get("text", f"Каталог · часть {index+1}\nРазделы обновляются…"), existing.get("rows", [])))
+
+            # 1) Price messages are always published first.
+            changes = await super().publish(pages)
+            manifest = self.state.get("published", {}).get("messages", {})
+
+            # 2) Brand navigation/cover posts come after prices when newly created.
             brand_ids = {}
             for brand in self.navigation:
                 key = "brand:" + digest(brand)[:16]
                 existing = self.nodes().get(key, {})
-                brand_ids[brand] = await self.node(key, existing.get("text", "<b>" + html.escape(brand) + "</b>\nВыбери раздел ниже."), existing.get("rows", []), brand)
-            changes = await super().publish(pages)
-            manifest = self.state.get("published", {}).get("messages", {})
-            keyboard_hashes = self.state.get("retail_price_keyboards", {})
-            for brand, sections in self.navigation.items():
-                buttons = []
-                for section in sections:
-                    keys = section["keys"]
-                    if keys and keys[0] in manifest:
-                        buttons.append({"text": section["section"], "url": message_link(self.target, manifest[keys[0]]["id"])})
-                    for index, key in enumerate(keys):
-                        if key not in manifest:
-                            continue
-                        rows, arrows = [], []
-                        for other, label in ((index-1, "← Предыдущая часть"), (index+1, "Следующая часть →")):
-                            if 0 <= other < len(keys) and keys[other] in manifest:
-                                arrows.append({"text": label, "url": message_link(self.target, manifest[keys[other]]["id"])})
-                        if arrows:
-                            rows.append(arrows)
-                        rows.append([{"text": brand, "url": message_link(self.target, brand_ids[brand])},
-                                     {"text": "Все бренды", "url": message_link(self.target, root_ids[0])}])
-                        fingerprint = digest(json.dumps([manifest[key]["id"], manifest[key]["hash"], rows]))
-                        if keyboard_hashes.get(key) != fingerprint:
-                            try:
-                                await self.api("editMessageReplyMarkup", chat_id=self.target, message_id=manifest[key]["id"],
-                                               reply_markup={"inline_keyboard": rows})
-                            except RuntimeError as exc:
-                                if "not modified" not in str(exc).lower():
-                                    raise
-                            keyboard_hashes[key] = fingerprint
-                            await asyncio.sleep(self.settings.send_delay)
-                rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
-                rows.append([{"text": "← Все бренды", "url": message_link(self.target, root_ids[0])}])
-                await self.node("brand:" + digest(brand)[:16], "<b>" + html.escape(brand) + "</b>\nВыбери раздел прайса.", rows, brand)
-            self.state.set("retail_price_keyboards", {k: v for k, v in keyboard_hashes.items() if k in manifest})
-            brands = list(self.navigation)
-            middle = max(1, (len(brands)+1)//2)
-            for index, group in enumerate((brands[:middle], brands[middle:])):
-                buttons = [{"text": name, "url": message_link(self.target, brand_ids[name])} for name in group]
-                rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
-                rows.append([{"text": "Другие бренды →" if index == 0 else "← Первая часть", "url": message_link(self.target, root_ids[1-index])}])
-                text = (html.escape(self.state.get("first_message_text", "Каталог техники")) if index == 0 else "<b>Каталог · другие бренды</b>")
-                text += "\n\nВыбери бренд, затем раздел. Нажми на товар в прайсе, чтобы оформить заявку."
-                if not group:
-                    text += "\nНовые разделы появятся вместе с товарами."
-                await self.node("root:" + str(index), text, rows)
-            # Remove obsolete cover posts when a brand is disabled or disappears.
-            live = {"root:0", "root:1"} | {"brand:" + digest(name)[:16] for name in brands}
+                brand_ids[brand] = await self.node(
+                    key,
+                    existing.get("text", "<b>" + html.escape(brand) + "</b>\nВыбери раздел ниже."),
+                    existing.get("rows", []),
+                    brand,
+                )
+
+            # Remove obsolete cover posts before deciding the final catalog layout.
+            live_brand_keys = {"brand:" + digest(name)[:16] for name in self.navigation}
             nodes = self.nodes()
             for key in list(nodes):
-                if key not in live:
+                if key.startswith("brand:") and key not in live_brand_keys:
                     try:
                         await self._delete(nodes[key]["id"])
                     except RuntimeError as exc:
@@ -375,10 +355,144 @@ class RetailPublisher(BotAPIPublisher):
                             raise
                     del nodes[key]
             self.save_nodes(nodes)
-            pinned = {"binding": self.binding(), "id": root_ids[0]}
+
+            # 3) The two root catalog posts must physically be the final managed
+            # messages. Main catalog (root:0) is the very last message.
+            nodes = self.nodes()
+            root0 = nodes.get("root:0", {})
+            root1 = nodes.get("root:1", {})
+            anchor_ids = [
+                int(entry["id"]) for entry in manifest.values() if entry.get("id")
+            ] + [int(value) for value in brand_ids.values() if value]
+            anchor_max = max(anchor_ids, default=0)
+            roots_are_last = bool(
+                root0.get("id") and root1.get("id")
+                and int(root1["id"]) > anchor_max
+                and int(root0["id"]) > int(root1["id"])
+            )
+            if not roots_are_last:
+                await self._drop_root_nodes()
+
+            brands = list(self.navigation)
+            middle = max(1, (len(brands) + 1) // 2)
+            first_group, second_group = brands[:middle], brands[middle:]
+
+            def root_text(index, group):
+                text = (
+                    html.escape(self.state.get("first_message_text", "Каталог техники"))
+                    if index == 0 else "<b>Каталог · другие бренды</b>"
+                )
+                text += "\n\nВыбери бренд, затем раздел. Нажми на товар в прайсе, чтобы оформить заявку."
+                if not group:
+                    text += "\nНовые разделы появятся вместе с товарами."
+                return text
+
+            def brand_rows(group):
+                buttons = [
+                    {"text": name, "url": message_link(self.target, brand_ids[name])}
+                    for name in group
+                ]
+                return [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+
+            # Create "other brands" first, then the main catalog last.
+            root1_existing = self.nodes().get("root:1", {})
+            root1_id = await self.node(
+                "root:1",
+                root1_existing.get("text", root_text(1, second_group)),
+                root1_existing.get("rows", brand_rows(second_group)),
+            )
+
+            root0_rows = brand_rows(first_group)
+            root0_rows.append([
+                {"text": "Другие бренды →", "url": message_link(self.target, root1_id)}
+            ])
+            root0_id = await self.node("root:0", root_text(0, first_group), root0_rows)
+
+            root1_rows = brand_rows(second_group)
+            root1_rows.append([
+                {"text": "← Первая часть", "url": message_link(self.target, root0_id)}
+            ])
+            await self.node("root:1", root_text(1, second_group), root1_rows)
+
+            # 4) Now that final root IDs are known, wire brand and price posts to
+            # those exact messages.
+            keyboard_hashes = self.state.get("retail_price_keyboards", {})
+            for brand, sections in self.navigation.items():
+                buttons = []
+                for section in sections:
+                    keys = section["keys"]
+                    if keys and keys[0] in manifest:
+                        buttons.append({
+                            "text": section["section"],
+                            "url": message_link(self.target, manifest[keys[0]]["id"]),
+                        })
+                    for index, key in enumerate(keys):
+                        if key not in manifest:
+                            continue
+                        rows, arrows = [], []
+                        for other, label in (
+                            (index - 1, "← Предыдущая часть"),
+                            (index + 1, "Следующая часть →"),
+                        ):
+                            if 0 <= other < len(keys) and keys[other] in manifest:
+                                arrows.append({
+                                    "text": label,
+                                    "url": message_link(self.target, manifest[keys[other]]["id"]),
+                                })
+                        if arrows:
+                            rows.append(arrows)
+                        rows.append([
+                            {"text": brand, "url": message_link(self.target, brand_ids[brand])},
+                            {"text": "Все бренды", "url": message_link(self.target, root0_id)},
+                        ])
+                        fingerprint = digest(json.dumps([
+                            manifest[key]["id"], manifest[key]["hash"], rows
+                        ]))
+                        if keyboard_hashes.get(key) != fingerprint:
+                            try:
+                                await self.api(
+                                    "editMessageReplyMarkup",
+                                    chat_id=self.target,
+                                    message_id=manifest[key]["id"],
+                                    reply_markup={"inline_keyboard": rows},
+                                )
+                            except RuntimeError as exc:
+                                if "not modified" not in str(exc).lower():
+                                    raise
+                            keyboard_hashes[key] = fingerprint
+                            await asyncio.sleep(self.settings.send_delay)
+
+                rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+                rows.append([
+                    {"text": "← Все бренды", "url": message_link(self.target, root0_id)}
+                ])
+                await self.node(
+                    "brand:" + digest(brand)[:16],
+                    "<b>" + html.escape(brand) + "</b>\nВыбери раздел прайса.",
+                    rows,
+                    brand,
+                )
+
+            self.state.set(
+                "retail_price_keyboards",
+                {k: v for k, v in keyboard_hashes.items() if k in manifest},
+            )
+
+            pinned = {"binding": self.binding(), "id": root0_id}
             if self.state.get("retail_pinned") != pinned:
-                await self.api("pinChatMessage", chat_id=self.target, message_id=root_ids[0], disable_notification=True)
+                await self.api(
+                    "pinChatMessage",
+                    chat_id=self.target,
+                    message_id=root0_id,
+                    disable_notification=True,
+                )
                 self.state.set("retail_pinned", pinned)
-            await asyncio.to_thread(self.retail.set, "system", "catalog_url", message_link(self.target, root_ids[0]))
+
+            await asyncio.to_thread(
+                self.retail.set,
+                "system",
+                "catalog_url",
+                message_link(self.target, root0_id),
+            )
             await self.cleanup_retired_test_posts()
             return changes
