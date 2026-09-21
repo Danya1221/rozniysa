@@ -45,6 +45,26 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(sum(p['section'] == 'MacBook / iMac' for p in products), 2)
         self.assertTrue(all('Упак' not in p['title'] for p in products))
 
+    def test_samsung_s25_s26_and_s26_ultra_have_separate_retail_buttons(self):
+        items = parse_documents(['''Samsung Galaxy S25 12/256 Black — 65000
+Samsung Galaxy S25 Ultra 12/512 Titanium Gray — 90000
+Samsung Galaxy S26 12/256 Black — 75000
+Samsung Galaxy S26+ 12/256 Blue — 82000
+Samsung Galaxy S26 Ultra 12/512 Titanium Black — 105000''']).items
+        products = [to_product(item, Settings()) for item in items]
+
+        self.assertEqual([p['brand'] for p in products], ['Samsung'] * 5)
+        self.assertEqual(
+            [p['section'] for p in products],
+            ['S25', 'S25', 'S26', 'S26', 'S26 Ultra'],
+        )
+
+        _, navigation = render_prices(products, 'checkout_test_bot')
+        self.assertEqual(
+            [entry['section'] for entry in navigation['Samsung']],
+            ['S25', 'S26', 'S26 Ultra'],
+        )
+
     def test_action_cameras_share_cover_but_keep_global_brands_separate(self):
         items = parse_documents(['''DJI Osmo Action 5 Pro — 41000
 Insta360 X5 — 52000

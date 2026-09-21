@@ -45,10 +45,19 @@ def brand_section(item):
         return "Apple", "Аксессуары Apple" if block in {"Apple Accessories", "AirTag", "Apple TV", "Apple"} else block
     if block.startswith("Samsung"):
         section = "Samsung"
-        for pattern, label in [(r"\b(?:Fold|Flip)\b", "Galaxy Fold / Flip"),
-                               (r"\bTab\b", "Планшеты"), (r"\bWatch\b", "Часы"),
-                               (r"\bBuds\b", "Наушники"), (r"\bA\s*\d{2,3}\b", "Galaxy A"),
-                               (r"\bS\s*\d{2}\b", "Galaxy S")]:
+        for pattern, label in [
+            (r"\b(?:Fold|Flip)\b", "Galaxy Fold / Flip"),
+            (r"\bTab\b", "Планшеты"),
+            (r"\bWatch\b", "Часы"),
+            (r"\bBuds\b", "Наушники"),
+            (r"\bA\s*\d{2,3}\b", "Galaxy A"),
+            # Retail Samsung S-series is split into customer-facing buttons.
+            # S26+ stays with S26; only Ultra gets its own section.
+            (r"\bS\s*26\s*Ultra\b", "S26 Ultra"),
+            (r"\bS\s*26(?:\+|\s*Plus)?\b", "S26"),
+            (r"\bS\s*25(?:\s*(?:Ultra|Edge|FE|\+|Plus))?\b", "S25"),
+            (r"\bS\s*\d{2}\b", "Galaxy S"),
+        ]:
             if re.search(pattern, item.title, re.I):
                 section = label
                 break
@@ -86,7 +95,7 @@ def section_order(value):
 
     presets = [
         "Apple Watch", "AirPods", "iPad", "MacBook / iMac", "Mac mini",
-        "Mac Studio", "Аксессуары Apple", "Galaxy A", "Galaxy S",
+        "Mac Studio", "Аксессуары Apple", "Galaxy A", "S25", "S26", "S26 Ultra", "Galaxy S",
         "Galaxy Fold / Flip", "Планшеты", "Часы", "Наушники",
     ]
     return (1, presets.index(value), natural(value)) if value in presets else (2, 0, natural(value))
