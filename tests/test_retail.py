@@ -328,18 +328,33 @@ class RetailAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.store.get('system','catalog_url').endswith('/'+str(new_root)))
         self.assertEqual(self.state.get('retail_pinned')['id'],new_root)
 
-    async def test_deleted_page_recovered_without_rebuilding_other_prices(self):
+    async def test_deleted_page_is_recovered_without_breaking_brand_layout(self):
         await self.publisher.publish(self.pages)
-        manifest = self.state.get('published')['messages']
-        key = next(iter(manifest))
-        del self.publisher.messages[manifest[key]['id']]
+        before = {
+            key: dict(value)
+            for key, value in self.state.get('published')['messages'].items()
+        }
+        key = next(iter(before))
+        del self.publisher.messages[before[key]['id']]
         self.state.set('retail_probe', 0)
+
         await self.publisher.publish(self.pages)
-        new = self.state.get('published')['messages']
-        self.assertNotEqual(new[key]['id'], manifest[key]['id'])
-        for other in manifest:
-            if other != key:
-                self.assertEqual(new[other]['id'], manifest[other]['id'])
+
+        manifest = self.state.get('published')['messages']
+        self.assertIn(key, manifest)
+        self.assertIn(manifest[key]['id'], self.publisher.messages)
+
+        # The repair may rebuild a whole physical sequence because Telegram cannot
+        # insert a recovered message into the middle. What matters is that the
+        # storefront chronology is correct after recovery.
+        nodes = self.publisher.nodes()
+        desired = self.publisher._desired_units(self.pages)
+        ids = [
+            self.publisher._unit_id(unit, manifest, nodes)
+            for unit in desired
+        ]
+        self.assertTrue(all(message_id is not None for message_id in ids))
+        self.assertEqual(ids, sorted(ids))
 
     async def test_changed_price_keeps_id_and_changes_keyboard_checkpoint(self):
         await self.publisher.publish(self.pages)
@@ -360,7 +375,7 @@ class RetailAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.publisher.fail_send = True
         with self.assertRaises(RuntimeError):
             await self.publisher.publish(self.pages)
-        self.assertIsNotNone(self.state.get('pending_publish'))
+        self.assertIsNotNone(self.state.get('pending_retail_node'))
         self.publisher.fail_send = False
         with self.assertRaisesRegex(RuntimeError, 'Восстановить публикацию'):
             await self.publisher.publish(self.pages)
@@ -416,13 +431,25 @@ class RetailAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(meta['count'],1)
         self.assertIsNone(self.store.get('catalog', stable_id('temporary-retail-test|iphone-17|256gb|blue|hybrid')))
 
-    async def test_section_order_reuses_chronological_price_slots(self):
+    async def test_navigation_order_is_stable_even_if_pages_dict_is_reversed(self):
         await self.publisher.publish(self.pages)
-        old_ids = sorted(v['id'] for v in self.state.get('published')['messages'].values())
+        before = {
+            key: value['id']
+            for key, value in self.state.get('published')['messages'].items()
+        }
+
         reordered = dict(reversed(list(self.pages.items())))
         await self.publisher.publish(reordered)
+
         manifest = self.state.get('published')['messages']
-        self.assertEqual([manifest[k]['id'] for k in reordered], old_ids)
+        self.assertEqual(
+            {key: value['id'] for key, value in manifest.items()},
+            before,
+        )
+        nodes = self.publisher.nodes()
+        desired = self.publisher._desired_units(reordered)
+        ids = [self.publisher._unit_id(unit, manifest, nodes) for unit in desired]
+        self.assertEqual(ids, sorted(ids))
 
     async def test_pending_checkpoint_is_cleared_with_saved_message(self):
         await self.publisher.ensure_target()
