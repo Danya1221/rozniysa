@@ -65,6 +65,25 @@ Samsung Galaxy S26 Ultra 12/512 Titanium Black — 105000''']).items
             ['S25', 'S26'],
         )
 
+    def test_samsung_fold_flip_and_wearables_have_requested_retail_sections(self):
+        items = parse_documents(['''Samsung Galaxy Z Fold 7 12/256 Black — 120000
+Samsung Galaxy Z Flip 7 12/256 Mint — 78000
+Samsung Galaxy Watch Ultra Black — 55000
+Samsung Galaxy Buds 4 Black — 20000''']).items
+        products = [to_product(item, Settings()) for item in items]
+
+        self.assertEqual([p['brand'] for p in products], ['Samsung'] * 4)
+        self.assertEqual(
+            [p['section'] for p in products],
+            ['Fold', 'Flip', 'Часы / Наушники', 'Часы / Наушники'],
+        )
+
+        _, navigation = render_prices(products, 'checkout_test_bot')
+        self.assertEqual(
+            [entry['section'] for entry in navigation['Samsung']],
+            ['Fold', 'Flip', 'Часы / Наушники'],
+        )
+
     def test_action_cameras_share_cover_but_keep_global_brands_separate(self):
         items = parse_documents(['''DJI Osmo Action 5 Pro — 41000
 Insta360 X5 — 52000
