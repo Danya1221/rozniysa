@@ -320,6 +320,138 @@ class RetailPublisher(BotAPIPublisher):
             self.save_nodes(nodes)
             self.state.set("retail_pinned", None)
 
+    def _desired_units(self, pages):
+        """Physical order: brand cover, all price posts of that brand, repeat."""
+        units, seen = [], set()
+        for brand, sections in self.navigation.items():
+            units.append(("brand", brand))
+            for section in sections:
+                for key in section.get("keys", []):
+                    if key in pages and key not in seen:
+                        units.append(("price", key))
+                        seen.add(key)
+        # Defensive fallback for a rendered page that has not entered navigation.
+        for key in pages:
+            if key not in seen:
+                units.append(("price", key))
+        return units
+
+    def _unit_id(self, unit, manifest, nodes):
+        kind, value = unit
+        if kind == "price":
+            record = manifest.get(value) or {}
+        else:
+            record = nodes.get("brand:" + digest(value)[:16]) or {}
+        return int(record["id"]) if record.get("id") else None
+
+    def _layout_needs_rebuild(self, pages, manifest, nodes):
+        """Return True when Telegram's immutable chronology cannot match the plan."""
+        last_id = 0
+        missing_before_existing = False
+        for unit in self._desired_units(pages):
+            message_id = self._unit_id(unit, manifest, nodes)
+            if message_id is None:
+                missing_before_existing = True
+                continue
+            if missing_before_existing or message_id <= last_id:
+                return True
+            last_id = message_id
+        return False
+
+    async def _reset_interleaved_layout(self):
+        """One-time structural rebuild; every send is checkpointed afterwards."""
+        stored = self.state.get("published", {}) or {}
+        manifest = stored.get("messages", {}) if stored.get("binding") == self.binding() else {}
+        nodes = self.nodes()
+        ids = [
+            int(entry["id"]) for entry in manifest.values() if entry.get("id")
+        ] + [
+            int(entry["id"]) for key, entry in nodes.items()
+            if (key.startswith("brand:") or key.startswith("root:")) and entry.get("id")
+        ]
+        for message_id in sorted(set(ids), reverse=True):
+            try:
+                await self._delete(message_id)
+            except RuntimeError as exc:
+                if not missing(exc):
+                    raise
+        self.state.update({
+            "published": {"binding": self.binding(), "messages": {}},
+            "retail_nodes": {"binding": self.binding(), "nodes": {}},
+            "retail_price_keyboards": {},
+            "retail_pinned": None,
+            "rebuild_old_manifest": None,
+        })
+
+    async def _upsert_price_page(self, key, content, manifest):
+        binding = self.binding()
+        entry = manifest.get(key) or {}
+        message_id = entry.get("id")
+        content_hash = digest(content)
+        unchanged = bool(
+            message_id and (
+                entry.get("hash") == content_hash or entry.get("content") == content
+            )
+        )
+        changed = 0
+
+        if message_id and not unchanged:
+            try:
+                await self._edit(message_id, content)
+                changed = 1
+            except RuntimeError as exc:
+                if "message is not modified" in str(exc).lower():
+                    pass
+                elif missing(exc):
+                    message_id = None
+                else:
+                    raise
+
+        if not message_id:
+            self.state.set("pending_publish", {
+                "binding": binding,
+                "key": key,
+                "text": content,
+            })
+            try:
+                message = await self._send(content)
+            except BotAPIDefiniteError:
+                self.state.set("pending_publish", None)
+                raise
+            message_id = int(message["message_id"])
+            changed = 1
+
+        manifest[key] = {
+            "id": int(message_id),
+            "hash": content_hash,
+            "content": content,
+        }
+        self.state.update({
+            "published": {"binding": binding, "messages": manifest},
+            "pending_publish": None,
+        })
+        if changed:
+            await asyncio.sleep(max(0, self.settings.send_delay))
+        return changed
+
+    async def _delete_obsolete_prices(self, pages, manifest):
+        changes = 0
+        for key in list(manifest):
+            if key in pages:
+                continue
+            try:
+                await self._delete(manifest[key]["id"])
+            except RuntimeError as exc:
+                if not missing(exc):
+                    raise
+            del manifest[key]
+            self.state.set("published", {
+                "binding": self.binding(),
+                "messages": manifest,
+            })
+            changes += 1
+        return changes
+
     async def publish(self, pages):
         async with self.layout_lock:
             await self.ensure_target()
@@ -327,24 +459,65 @@ class RetailPublisher(BotAPIPublisher):
                 raise RuntimeError("Для переходов по разделам выбери канал или супергруппу Telegram")
             await self.recover_pending()
 
-            # 1) Price messages are always published first.
-            changes = await super().publish(pages)
-            manifest = self.state.get("published", {}).get("messages", {})
+            binding = self.binding()
+            stored = self.state.get("published", {}) or {}
+            manifest = stored.get("messages", {}) if stored.get("binding") == binding else {}
+            nodes = self.nodes()
 
-            # 2) Brand navigation/cover posts come after prices when newly created.
+            # Telegram cannot move an existing message. If the old deployment has
+            # prices first and covers later (or a new section must be inserted in
+            # the middle), rebuild the managed layout once in the correct order.
+            if self._layout_needs_rebuild(pages, manifest, nodes):
+                await self._reset_interleaved_layout()
+                manifest, nodes = {}, {}
+
+            desired = self._desired_units(pages)
+            has_missing = any(self._unit_id(unit, manifest, nodes) is None for unit in desired)
+            existing_ids = [
+                self._unit_id(unit, manifest, nodes)
+                for unit in desired
+                if self._unit_id(unit, manifest, nodes) is not None
+            ]
+            anchor_max = max(existing_ids, default=0)
+            root0 = nodes.get("root:0", {})
+            root1 = nodes.get("root:1", {})
+            roots_are_last = bool(
+                root0.get("id") and root1.get("id")
+                and int(root1["id"]) > anchor_max
+                and int(root0["id"]) > int(root1["id"])
+            )
+            if has_missing or not roots_are_last:
+                await self._drop_root_nodes()
+                nodes = self.nodes()
+
+            changes = 0
             brand_ids = {}
-            for brand in self.navigation:
-                key = "brand:" + digest(brand)[:16]
-                existing = self.nodes().get(key, {})
-                brand_ids[brand] = await self.node(
-                    key,
-                    existing.get("text", "<b>" + html.escape(brand) + "</b>\nВыбери раздел ниже."),
-                    existing.get("rows", []),
-                    brand,
-                )
 
-            # Remove obsolete cover posts before deciding the final catalog layout.
-            live_brand_keys = {"brand:" + digest(name)[:16] for name in self.navigation}
+            # This is the core storefront layout:
+            # Apple cover -> every Apple price post -> Samsung cover -> ...
+            for kind, value in desired:
+                if kind == "brand":
+                    key = "brand:" + digest(value)[:16]
+                    existing = self.nodes().get(key, {})
+                    brand_ids[value] = await self.node(
+                        key,
+                        existing.get(
+                            "text",
+                            "<b>" + html.escape(value) + "</b>\nВыбери раздел ниже.",
+                        ),
+                        existing.get("rows", []),
+                        value,
+                    )
+                    nodes = self.nodes()
+                else:
+                    changes += await self._upsert_price_page(value, pages[value], manifest)
+
+            changes += await self._delete_obsolete_prices(pages, manifest)
+
+            # Delete covers for brands that disappeared.
+            live_brand_keys = {
+                "brand:" + digest(name)[:16] for name in self.navigation
+            }
             nodes = self.nodes()
             for key in list(nodes):
                 if key.startswith("brand:") and key not in live_brand_keys:
@@ -356,23 +529,7 @@ class RetailPublisher(BotAPIPublisher):
                     del nodes[key]
             self.save_nodes(nodes)
 
-            # 3) The two root catalog posts must physically be the final managed
-            # messages. Main catalog (root:0) is the very last message.
-            nodes = self.nodes()
-            root0 = nodes.get("root:0", {})
-            root1 = nodes.get("root:1", {})
-            anchor_ids = [
-                int(entry["id"]) for entry in manifest.values() if entry.get("id")
-            ] + [int(value) for value in brand_ids.values() if value]
-            anchor_max = max(anchor_ids, default=0)
-            roots_are_last = bool(
-                root0.get("id") and root1.get("id")
-                and int(root1["id"]) > anchor_max
-                and int(root0["id"]) > int(root1["id"])
-            )
-            if not roots_are_last:
-                await self._drop_root_nodes()
-
+            # General catalog is always the final two managed messages.
             brands = list(self.navigation)
             middle = max(1, (len(brands) + 1) // 2)
             first_group, second_group = brands[:middle], brands[middle:]
@@ -394,7 +551,6 @@ class RetailPublisher(BotAPIPublisher):
                 ]
                 return [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
 
-            # Create "other brands" first, then the main catalog last.
             root1_existing = self.nodes().get("root:1", {})
             root1_id = await self.node(
                 "root:1",
@@ -414,8 +570,8 @@ class RetailPublisher(BotAPIPublisher):
             ])
             await self.node("root:1", root_text(1, second_group), root1_rows)
 
-            # 4) Now that final root IDs are known, wire brand and price posts to
-            # those exact messages.
+            # Brand-cover buttons jump directly to the price messages immediately
+            # below that cover; price posts link back to their cover and catalog.
             keyboard_hashes = self.state.get("retail_price_keyboards", {})
             for brand, sections in self.navigation.items():
                 buttons = []
@@ -477,8 +633,9 @@ class RetailPublisher(BotAPIPublisher):
                 "retail_price_keyboards",
                 {k: v for k, v in keyboard_hashes.items() if k in manifest},
             )
+            self.state.set("retail_layout_version", 2)
 
-            pinned = {"binding": self.binding(), "id": root0_id}
+            pinned = {"binding": binding, "id": root0_id}
             if self.state.get("retail_pinned") != pinned:
                 await self.api(
                     "pinChatMessage",
