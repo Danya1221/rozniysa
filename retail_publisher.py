@@ -462,6 +462,12 @@ class RetailPublisher(BotAPIPublisher):
             binding = self.binding()
             stored = self.state.get("published", {}) or {}
             manifest = stored.get("messages", {}) if stored.get("binding") == binding else {}
+
+            # Keep the old hourly existence probe. If a managed price message was
+            # manually deleted, remove its stale ID first; the layout check below
+            # will then either recreate it at the end of its brand or rebuild the
+            # affected chronology when insertion in the middle is required.
+            await self._verify_or_rebuild_manifest(pages, manifest, binding)
             nodes = self.nodes()
 
             # Telegram cannot move an existing message. If the old deployment has
