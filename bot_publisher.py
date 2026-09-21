@@ -15,6 +15,10 @@ import aiohttp
 from telethon.extensions import html as telegram_html
 
 
+class BotAPIDefiniteError(RuntimeError):
+    """Telegram explicitly rejected a request, so it was not accepted."""
+
+
 def digest(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -121,7 +125,14 @@ class BotAPIPublisher:
                 await asyncio.sleep(min(1 + attempt, 3))
                 continue
 
-            raise RuntimeError(f"Bot API {method}: {data.get('description', data)}")
+            message = f"Bot API {method}: {data.get('description', data)}"
+            # A JSON error response from Telegram with 4xx/429 is a definite
+            # rejection. Callers may safely discard a pre-send pending marker.
+            if status < 500:
+                raise BotAPIDefiniteError(message)
+            # 5xx on a non-idempotent send may arrive after Telegram accepted the
+            # message; preserve pending state for history/manual recovery.
+            raise RuntimeError(message)
 
         raise RuntimeError(f"Bot API {method}: превышено число повторных попыток")
 
@@ -426,7 +437,14 @@ class BotAPIPublisher:
                         "key": key,
                         "text": content,
                     })
-                    message = await self._send(content)
+                    try:
+                        message = await self._send(content)
+                    except BotAPIDefiniteError:
+                        # Telegram explicitly said no (e.g. 400/403/429). The
+                        # message was not accepted, so keeping pending would block
+                        # every later sync for no reason.
+                        self.state.set("pending_publish", None)
+                        raise
                     message_id = int(message["message_id"])
                     changes += 1
                     changed_this_page = True
