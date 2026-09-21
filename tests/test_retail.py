@@ -286,7 +286,7 @@ class RetailAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.publisher.fail_send = True
         with self.assertRaises(RuntimeError):
             await self.publisher.publish(self.pages)
-        self.assertIsNotNone(self.state.get('pending_retail_node'))
+        self.assertIsNotNone(self.state.get('pending_publish'))
         self.publisher.fail_send = False
         with self.assertRaisesRegex(RuntimeError, 'Восстановить публикацию'):
             await self.publisher.publish(self.pages)
