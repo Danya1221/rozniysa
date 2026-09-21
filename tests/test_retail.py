@@ -12,8 +12,8 @@ from config import Settings, Source
 from prices import parse_documents, select_items, Item, ParseResult, activation_state, units
 from retail_catalog import to_product, dedupe_products, render_prices, cover_bytes
 from retail_publisher import RetailPublisher
-from retail_runtime import RetailSyncService, RETAIL_TEST_PRODUCT
-from retail_store import RetailStore
+from retail_runtime import RetailSyncService
+from retail_store import RetailStore, stable_id
 from runtime import timestamp
 from state import StateStore
 
@@ -87,13 +87,6 @@ class CatalogTests(unittest.TestCase):
         self.assertIn('SIM + eSIM', text)
         self.assertIn('Не активированное', text)
         self.assertNotIn('Статус неизвестен', text)
-
-    def test_temporary_checkout_item_is_clickable_at_exact_price(self):
-        pages, _ = render_prices([dict(RETAIL_TEST_PRODUCT)], 'checkout_test_bot')
-        text = '\n'.join(pages.values())
-        self.assertIn('iPhone 17 256GB Blue Sim+eSim — 150 000', text)
-        self.assertIn('?start=p_' + RETAIL_TEST_PRODUCT['id'], text)
-        self.assertEqual(RETAIL_TEST_PRODUCT['section'], 'iPhone 17')
 
     def test_bad_checkout_username_stops_publication(self):
         with self.assertRaises(ValueError):
@@ -292,8 +285,8 @@ class RetailAsyncTests(unittest.IsolatedAsyncioTestCase):
         service.active_reader_entries = lambda: iter([(1,first),(1,second)])
         await service.sync()
         catalog = self.store.scan('catalog')
-        self.assertEqual(len(catalog),3)
-        self.assertIn(RETAIL_TEST_PRODUCT['id'], dict(catalog))
+        self.assertEqual(len(catalog),2)
+        self.assertNotIn(stable_id('temporary-retail-test|iphone-17|256gb|blue|hybrid'), dict(catalog))
         self.assertFalse(self.store.get('system','catalog')['confirmed'])
 
     async def test_closed_supplier_stale_lower_price_does_not_beat_open_supplier(self):
@@ -318,8 +311,8 @@ class RetailAsyncTests(unittest.IsolatedAsyncioTestCase):
         meta = self.store.get('system','catalog')
         self.assertFalse(meta['confirmed'])
         self.assertLess(meta['checked_at'],time.time()-3600)
-        self.assertEqual(meta['count'],2)
-        self.assertIsNotNone(self.store.get('catalog', RETAIL_TEST_PRODUCT['id']))
+        self.assertEqual(meta['count'],1)
+        self.assertIsNone(self.store.get('catalog', stable_id('temporary-retail-test|iphone-17|256gb|blue|hybrid')))
 
     async def test_section_order_reuses_chronological_price_slots(self):
         await self.publisher.publish(self.pages)

@@ -104,8 +104,12 @@ class CatalogBridge:
                       "checked_at": time.time() if checked_at is None else checked_at}
             url = self.local.get("bridge", "catalog_url", "")
             if url:
-                parsed = urlsplit(str(url))
-                if parsed.scheme == "https" and parsed.netloc == "t.me" and parsed.path.strip("/"):
+                try:
+                    parsed = urlsplit(str(url))
+                    valid = parsed.scheme == "https" and parsed.netloc == "t.me" and bool(parsed.path.strip("/"))
+                except ValueError:
+                    valid = False
+                if valid:
                     values["catalog_url"] = url
                 else:
                     # A stale/hand-edited navigation URL must never block price sync.

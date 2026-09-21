@@ -13,10 +13,14 @@ sys.path.insert(0,str(PAIR))
 sys.path.insert(0,str(ROOT))
 
 from aiohttp import web
-from config import Settings
+from config import Settings, Source
 from prices import parse_documents
-from retail_catalog import to_product, render_prices
-from retail_store import RetailStore
+from retail_catalog import to_product, dedupe_products, render_prices
+from retail_store import RetailStore, stable_id
+from retail_runtime import RetailSyncService
+from runtime import timestamp
+from state import StateStore
+from test_retail import FakePublisher
 from catalog_bridge import CatalogBridge, CatalogBridgeError
 from catalog_api import create_app
 from orders import OrderService
@@ -92,6 +96,46 @@ class PairIntegration(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(CatalogBridgeError):
             await asyncio.to_thread(wrong.put_catalog,[],confirmed=True)
         self.assertIsNone(self.remote.get('system','catalog'))
+
+    async def test_full_publication_keeps_real_cart_and_retires_test_without_losing_orders(self):
+        settings = Settings(send_delay=0, sources=(Source('@first'),))
+        items = parse_documents([
+            '16 Pro 128 Desert CPO 🇺🇸 (Ориг. Упаковка iPhone) — 77300\n'
+            '16 Pro 128 Desert CPO 🇺🇸 — 76800\n'
+            '17 256 Black (eSim) — 80000\nS11 42 Jet Black — 28000']).items
+        products = dedupe_products([to_product(item, settings) for item in items])
+        test_id = stable_id('temporary-retail-test|iphone-17|256gb|blue|hybrid')
+        retired = dict(products[0], id=test_id, title='iPhone 17 256GB Blue Sim+eSim', price='150000')
+        await asyncio.to_thread(self.bridge.put_catalog, products + [retired], confirmed=True)
+        self.service.add(20, products[0]['id'])
+        cart_before = self.service.cart(20)
+        self.service.add(21, test_id)
+        for field, value in {'name': 'Иван Петров', 'phone': '+79123456789', 'delivery': 'pickup'}.items():
+            self.service.field(21, field, value)
+        order = self.service.submit({'id': 21}, self.service.cart(21)['token'])
+        self.service.add(21, test_id)
+
+        state = StateStore(Path(self.tmp.name) / 'runtime.json')
+        publisher = FakePublisher(state, settings, self.bridge)
+        try:
+            state.set('sources', {'@first': {'status': 'open', 'checked': timestamp(),
+                'items': [item.to_dict() for item in items], 'error': None}})
+            runtime = RetailSyncService(None, settings, state, self.bridge, 'test_orders_bot')
+            runtime.publisher = publisher
+            count, _ = await runtime.render()
+            self.assertEqual(count, len(products))
+            text = '\n'.join(record['content'] for record in state.get('published')['messages'].values())
+            self.assertEqual(set(re.findall(r'\?start=p_([a-f0-9]{24})', text)), {p['id'] for p in products})
+            self.assertEqual(self.service.cart(20), cart_before)
+            self.assertFalse(self.service.cart(21))
+            self.assertFalse(self.remote.get('catalog', test_id)['active'])
+            self.assertEqual(self.service.get_order(21, order['id'])['subtotal'], '150000.00')
+            message_ids = set(publisher.messages)
+            await runtime.render()
+            self.assertEqual(set(publisher.messages), message_ids)
+        finally:
+            await publisher.close()
+            state.close()
 
 
 if __name__ == '__main__':

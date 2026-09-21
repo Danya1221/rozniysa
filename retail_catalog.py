@@ -77,6 +77,28 @@ def product_sort(p):
             SIM_ORDER.get(p.get("sim", "unknown"), 99), p.get("storage_rank", 0), natural(p["title"]))
 
 
+def product_line(product, username, limit=None):
+    prefix = f'<a href="https://t.me/{username}?start=p_{product["id"]}">'
+    suffix = html.escape(" — " + price_text(Decimal(product["price"]), product["currency"])) + "</a>\n"
+    title = html.escape(product["title"])
+    if limit is not None and units(prefix + title + suffix) > limit:
+        # Keep the whole authoritative name in checkout. Only shorten the public
+        # link label when one unusually long row would block the entire price.
+        budget = limit - units(prefix + "…" + suffix)
+        if budget < 1:
+            raise ValueError("Слишком длинный заголовок раздела")
+        parts = []
+        for char in product["title"]:
+            escaped = html.escape(char)
+            size = units(escaped)
+            if size > budget:
+                break
+            parts.append(escaped)
+            budget -= size
+        title = "".join(parts) + "…"
+    return prefix + title + suffix
+
+
 def render_prices(products, username, preferred=()):
     if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username or ""):
         raise ValueError("Укажи ORDER_BOT_USERNAME: username бота оформления без @")
@@ -101,9 +123,7 @@ def render_prices(products, username, preferred=()):
                 group = (product["model"], "Активированное" if product.get("condition") == "active" else "Не активированное",
                          SIM_LABELS.get(product.get("sim"), ""))
             subgroup = "<b>" + html.escape(" · ".join(x for x in group if x)) + "</b>\n" if group else ""
-            url = f'https://t.me/{username}?start=p_{product["id"]}'
-            label = product["title"] + " — " + price_text(Decimal(product["price"]), product["currency"])
-            line = f'<a href="{url}">{html.escape(label)}</a>\n'
+            line = product_line(product, username)
             addition = (("\n" if last_group else "") + subgroup if group != last_group else "") + line
             if units(body + addition) > 3600 and body != heading + "\n\n":
                 key = prefix + ":" + str(index)
@@ -113,7 +133,8 @@ def render_prices(products, username, preferred=()):
                 body = heading + f"\nЧасть {index+1}\n\n"
                 addition = subgroup + line
             if units(body + addition) > 3900:
-                raise ValueError("Слишком длинное название позиции: " + product["title"][:70])
+                before_line = addition[:-len(line)]
+                addition = before_line + product_line(product, username, 3900 - units(body + before_line))
             body += addition
             last_group = group
         key = prefix + ":" + str(index)

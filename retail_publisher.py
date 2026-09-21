@@ -2,6 +2,7 @@
 import asyncio
 import html
 import json
+import logging
 import time
 from contextlib import suppress
 
@@ -10,6 +11,8 @@ import aiohttp
 from bot_publisher import BotAPIPublisher, digest, plain
 from catalog_publisher import message_link
 from retail_catalog import cover_bytes
+
+log = logging.getLogger(__name__)
 
 
 def missing(exc):
@@ -23,6 +26,40 @@ class RetailPublisher(BotAPIPublisher):
         self.client = None
         self.navigation = {}
         self.layout_lock = asyncio.Lock()
+
+    async def bind_group(self, chat_id, *, title="", chat_type=""):
+        if self.layout_lock.locked():
+            raise RuntimeError("Идёт публикация прайса. Дождись завершения и привяжи группу ещё раз")
+        async with self.layout_lock:
+            return await super().bind_group(chat_id, title=title, chat_type=chat_type)
+
+    async def cleanup_retired_test_posts(self):
+        """One-time cleanup of untracked posts from the retired test button."""
+        if not self.client or self.state.get("retired_test_cleaned") == self.binding():
+            return
+        try:
+            messages = await self.client.get_messages(self.target, limit=100, search="ТЕСТОВАЯ ПОЗИЦИЯ")
+            for message in messages:
+                if getattr(message, "sender_id", None) != self.bot_id:
+                    continue
+                text = (getattr(message, "raw_text", "") or "").strip()
+                if text != "ТЕСТОВАЯ ПОЗИЦИЯ\n\niPhone 17 256GB Blue Sim+eSim — 150 000":
+                    continue
+                urls = [getattr(entity, "url", "") for entity in getattr(message, "entities", ()) or ()]
+                if not any(url.endswith("?start=p_15dcc99ee2ffb0dca9788f6a") for url in urls):
+                    continue
+                try:
+                    await self._delete(message.id)
+                except RuntimeError as exc:
+                    if not missing(exc):
+                        raise
+                await asyncio.sleep(self.settings.send_delay)
+            # If a large number of old tests existed, clean the next batch later.
+            if len(messages) < 100:
+                self.state.set("retired_test_cleaned", self.binding())
+        except Exception as exc:
+            # Price updates do not depend on optional access to old test history.
+            log.warning("Очистка старых тестовых постов отложена: %s", type(exc).__name__)
 
     def arrange_manifest(self, pages, manifest):
         # Telegram has no move operation. Reuse chronological text slots.
@@ -158,9 +195,10 @@ class RetailPublisher(BotAPIPublisher):
                 await asyncio.sleep(wait_seconds + 1)
                 continue
 
-            if status in {500, 502, 503, 504} and attempt < max_attempts - 1:
-                await asyncio.sleep(min(1 + attempt, 3))
-                continue
+            # A 5xx may arrive after Telegram accepted the photo. Leave the
+            # pending node for history recovery instead of sending another copy.
+            if status >= 500:
+                raise RuntimeError("Telegram не подтвердил отправку обложки; повтор только после проверки истории")
 
             raise RuntimeError(str(result.get("description", "Не удалось отправить обложку")))
 
@@ -289,4 +327,5 @@ class RetailPublisher(BotAPIPublisher):
                 await self.api("pinChatMessage", chat_id=self.target, message_id=root_ids[0], disable_notification=True)
                 self.state.set("retail_pinned", pinned)
             await asyncio.to_thread(self.retail.set, "system", "catalog_url", message_link(self.target, root_ids[0]))
+            await self.cleanup_retired_test_posts()
             return changes

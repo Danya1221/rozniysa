@@ -24,7 +24,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Danya1221/zayavki
-          ref: def2f3332807f12b358450b07a5d5555d02f1858
+          ref: 0540b168f56dc04730eb451bcfe0aa31d40380c0
           path: _pair/zayavki
       - uses: actions/setup-python@v5
         with:

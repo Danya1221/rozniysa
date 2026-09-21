@@ -1,9 +1,7 @@
 """Private administrator controls for covers and recoverable publication."""
-import asyncio
 from control_catalog import CatalogController, block_id
 from prices import select_items
-from retail_catalog import to_product, dedupe_products, render_prices
-from retail_runtime import RETAIL_TEST_PRODUCT
+from retail_catalog import to_product, render_prices
 
 
 class RetailController(CatalogController):
@@ -14,8 +12,7 @@ class RetailController(CatalogController):
 
     def menu(self):
         rows = super().menu()["inline_keyboard"]
-        rows.insert(0, [{"text": "🧪 Тест заказа", "callback_data": "retail:test_order"}])
-        rows.insert(1, [{"text": "📷 Обложки брендов", "callback_data": "retail:covers"}])
+        rows.insert(0, [{"text": "📷 Обложки брендов", "callback_data": "retail:covers"}])
         return {"inline_keyboard": rows}
 
     def known_blocks(self):
@@ -33,27 +30,8 @@ class RetailController(CatalogController):
         if not self.allowed(user_id, chat.get("type")) or chat.get("id") != user_id:
             return await self.answer_callback(callback["id"], "Нет доступа", True)
         await self.answer_callback(callback["id"])
-        if data == "retail:test_order":
-            # Independent end-to-end smoke test: sync the test product to checkout
-            # and post one direct clickable message without touching publish recovery.
-            items = select_items(self.service.retail_cached_items(), self.service.settings, self.service.options())
-            products = [to_product(i, self.service.settings, self.service.options()) for i in items]
-            products = dedupe_products(products + [dict(RETAIL_TEST_PRODUCT)])
-            confirmed, checked = self.service.freshness()
-            await asyncio.to_thread(self.service.retail.put_catalog, products,
-                                    confirmed=confirmed, checked_at=checked)
-            target = await self.service.publisher.ensure_target()
-            product_id = RETAIL_TEST_PRODUCT["id"]
-            url = f'https://t.me/{self.service.order_username}?start=p_{product_id}'
-            text = (
-                "<b>ТЕСТОВАЯ ПОЗИЦИЯ</b>\n\n"
-                f'<a href="{url}">iPhone 17 256GB Blue Sim+eSim — 150 000</a>'
-            )
-            await self.service.publisher.api(
-                "sendMessage", chat_id=target, text=text, parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
-            await self.send(user_id, "✅ Тестовая позиция отправлена в группу. Нажми на неё и проверь оформление.", self.menu())
+        if data in {"retail:test_order", "retail:test_remove"}:
+            await self.send(user_id, "Тест завершён. В прайс выгружаются только товары поставщиков.", self.menu())
         elif data == "retail:covers":
             brands = list(self.service.publisher.navigation)
             rows = [[{"text": b, "callback_data": "retail:cover:" + block_id(b)}] for b in brands]
@@ -65,6 +43,9 @@ class RetailController(CatalogController):
                 self.cover_waiting[user_id] = brand
                 await self.send(user_id, f"Отправь фото для «{brand}» как фотографию (не файл). /cancel — отмена.")
         elif data == "retail:retry" and user_id in self.retry_waiting:
+            if self.service.lock.locked() or (self.task and not self.task.done()):
+                await self.send(user_id, "Сначала дождись завершения текущего обновления.")
+                return
             self.retry_waiting.discard(user_id)
             self.service.state.update({"pending_publish": None, "pending_retail_node": None})
             await self.refresh_catalog(user_id)
