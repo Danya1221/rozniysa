@@ -3,6 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from bot_publisher import BotAPIDefiniteError, BotAPIPublisher
 from retail_control import RetailController
 from retail_publisher import RetailPublisher
 from retail_runtime import RetailSyncService
@@ -117,6 +118,62 @@ class RetailRegressionTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, 'публикац|обновлен'):
                 await self.publisher.bind_group(-100987654)
         self.assertEqual(self.publisher.target, -100123456)
+
+    async def test_definite_send_rejection_clears_pending_price_marker(self):
+        self.publisher.target = -100123456
+        self.publisher._send = AsyncMock(side_effect=BotAPIDefiniteError('Too Many Requests: retry after 28'))
+        with self.assertRaises(BotAPIDefiniteError):
+            await BotAPIPublisher.publish(self.publisher, {'probe': '<b>Probe</b>'})
+        self.assertIsNone(self.state.get('pending_publish'))
+
+    async def test_pending_recovery_refreshes_dialogs_before_reading_history(self):
+        self.publisher.target = -100123456
+        self.publisher.bot_id = 999
+        text = '<b>iPhone 17</b>\n\nTest row'
+        self.state.set('pending_publish', {
+            'binding': self.publisher.binding(), 'key': 'iphone17', 'text': text,
+        })
+        entity = object()
+        get_dialogs = AsyncMock(return_value=[SimpleNamespace(entity=entity)])
+        get_entity = AsyncMock()
+        get_messages = AsyncMock(return_value=[
+            SimpleNamespace(id=77, sender_id=999, raw_text='iPhone 17\n\nTest row')
+        ])
+        self.publisher.client = SimpleNamespace(
+            get_dialogs=get_dialogs, get_entity=get_entity, get_messages=get_messages,
+        )
+        with patch('retail_publisher.get_peer_id', return_value=-100123456):
+            await self.publisher.recover_pending()
+        get_dialogs.assert_awaited_once()
+        get_entity.assert_not_awaited()
+        get_messages.assert_awaited_once_with(entity, limit=300)
+        self.assertEqual(self.state.get('published')['messages']['iphone17']['id'], 77)
+        self.assertIsNone(self.state.get('pending_publish'))
+        self.assertIsNone(self.state.get('retail_pending_recovery'))
+
+    async def test_unreadable_pending_history_creates_manual_recovery_prompt(self):
+        self.publisher.target = -100123456
+        self.publisher.bot_id = 999
+        self.state.set('pending_publish', {
+            'binding': self.publisher.binding(),
+            'key': 'iphone17',
+            'text': '<b>iPhone 17</b>\n\niPhone 17 256 Blue — 150 000',
+        })
+        self.publisher.client = SimpleNamespace(get_dialogs=AsyncMock(side_effect=PermissionError()))
+        with self.assertRaisesRegex(RuntimeError, 'Восстановить публикацию'):
+            await self.publisher.recover_pending()
+        recovery = self.state.get('retail_pending_recovery')
+        self.assertEqual(recovery['field'], 'pending_publish')
+        self.assertIn('iPhone 17 256 Blue', recovery['preview'])
+
+        service = self.service()
+        service.publisher = self.publisher
+        service.sync = AsyncMock(return_value='Обновление не завершено: нужна проверка отправки')
+        controller = self.controller(service)
+        await controller.background_sync(42)
+        sent_text, markup = controller.send.await_args.args[1:3]
+        self.assertIn('iPhone 17 256 Blue', sent_text)
+        self.assertEqual(markup['inline_keyboard'][0][0]['callback_data'], 'retail:recover_publish')
 
     async def test_generated_photo_5xx_is_not_retried_and_keeps_checkpoint(self):
         class Response:
