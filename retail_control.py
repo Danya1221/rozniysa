@@ -42,13 +42,54 @@ class RetailController(CatalogController):
             if brand:
                 self.cover_waiting[user_id] = brand
                 await self.send(user_id, f"Отправь фото для «{brand}» как фотографию (не файл). /cancel — отмена.")
+        elif data == "retail:recover_publish":
+            recovery = self.service.state.get("retail_pending_recovery", {}) or {}
+            if not recovery or recovery.get("binding") != self.service.publisher.binding():
+                await self.send(user_id, "Зависшей отправки уже нет. Можно запросить прайс ещё раз.", self.menu())
+                return
+            if self.service.lock.locked() or (self.task and not self.task.done()):
+                await self.send(user_id, "Сначала дождись завершения текущего обновления.")
+                return
+            field = recovery.get("field")
+            if field not in {"pending_publish", "pending_retail_node"}:
+                await self.send(user_id, "Не удалось определить зависшую отправку. Используй /status.")
+                return
+            # This is deliberately user-confirmed: pressing the button means the
+            # previewed message was checked in the group and is NOT present there.
+            self.service.state.update({field: None, "retail_pending_recovery": None})
+            await self.send(user_id, "♻️ Восстанавливаю публикацию…")
+            await self.refresh_catalog(user_id)
         elif data == "retail:retry" and user_id in self.retry_waiting:
             if self.service.lock.locked() or (self.task and not self.task.done()):
                 await self.send(user_id, "Сначала дождись завершения текущего обновления.")
                 return
             self.retry_waiting.discard(user_id)
-            self.service.state.update({"pending_publish": None, "pending_retail_node": None})
+            self.service.state.update({"pending_publish": None, "pending_retail_node": None,
+                                       "retail_pending_recovery": None})
             await self.refresh_catalog(user_id)
+
+    async def background_sync(self, chat_id):
+        try:
+            result = await self.service.sync(force=True)
+            recovery = self.service.state.get("retail_pending_recovery", {}) or {}
+            if recovery and recovery.get("binding") == self.service.publisher.binding():
+                preview = recovery.get("preview") or "(фрагмент недоступен)"
+                text = (
+                    result
+                    + "\n\n⚠️ Есть незавершённая отправка. Проверь в группе, есть ли сообщение:\n\n"
+                    + "«" + preview + "»\n\n"
+                    + "Если такого сообщения НЕТ — нажми «Восстановить публикацию». "
+                      "Если оно есть, кнопку не нажимай: так мы не создадим дубль."
+                )
+                await self.send(chat_id, text, {"inline_keyboard": [[
+                    {"text": "♻️ Восстановить публикацию", "callback_data": "retail:recover_publish"}
+                ]]})
+                return
+            await self.send(chat_id, result, self.menu())
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("Ошибка ручного обновления розницы")
+            await self.send(chat_id, "Ошибка обновления. Проверь /status и журнал Railway", self.menu())
 
     async def handle_message(self, message):
         user_id = message.get("from", {}).get("id")
