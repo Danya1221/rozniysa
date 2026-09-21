@@ -9,10 +9,15 @@ import asyncio
 import hashlib
 import html
 import re
+import time
 from contextlib import suppress
 
 import aiohttp
 from telethon.extensions import html as telegram_html
+
+
+class BotAPIRejected(RuntimeError):
+    """Telegram explicitly rejected the operation; no message was created."""
 
 
 def digest(text):
@@ -121,7 +126,10 @@ class BotAPIPublisher:
                 await asyncio.sleep(min(1 + attempt, 3))
                 continue
 
-            raise RuntimeError(f"Bot API {method}: {data.get('description', data)}")
+            code = data.get("error_code", status)
+            rejected = data.get("ok") is False and isinstance(code, int) and 400 <= code < 500 and status < 500
+            error = BotAPIRejected if rejected else RuntimeError
+            raise error(f"Bot API {method}: {data.get('description', data)}")
 
         raise RuntimeError(f"Bot API {method}: превышено число повторных попыток")
 
@@ -273,8 +281,20 @@ class BotAPIPublisher:
         return chat_id
 
     def binding(self):
-        value = self.target if self.target is not None else self.configured_target
+        bound = self.state.get("publish_target", {}) or {}
+        value = self.target if self.target is not None else bound.get("chat_id", self.configured_target)
         return f"botapi:{value}"
+
+    def pending_send(self, key, text, **extra):
+        binding = self.binding()
+        published = self.state.get("published", {}) or {}
+        nodes = self.state.get("retail_nodes", {}) or {}
+        ids = [int(v["id"]) for v in published.get("messages", {}).values()
+               if published.get("binding") == binding and v.get("id")]
+        ids += [int(v["id"]) for v in nodes.get("nodes", {}).values()
+                if nodes.get("binding") == binding and v.get("id")]
+        return {"binding": binding, "key": key, "text": text,
+                "started_at": time.time(), "after_id": max(ids, default=0), **extra}
 
     def destination_note(self):
         if self.target is None:
@@ -421,12 +441,12 @@ class BotAPIPublisher:
                             raise
 
                 if not message_id:
-                    self.state.set("pending_publish", {
-                        "binding": binding,
-                        "key": key,
-                        "text": content,
-                    })
-                    message = await self._send(content)
+                    self.state.set("pending_publish", self.pending_send(key, content))
+                    try:
+                        message = await self._send(content)
+                    except BotAPIRejected:
+                        self.state.set("pending_publish", None)
+                        raise
                     message_id = int(message["message_id"])
                     changes += 1
                     changed_this_page = True

@@ -260,7 +260,7 @@ class RetailAsyncTests(unittest.IsolatedAsyncioTestCase):
             await self.publisher.publish(self.pages)
         self.assertIsNotNone(self.state.get('pending_retail_node'))
         self.publisher.fail_send = False
-        with self.assertRaisesRegex(RuntimeError, 'подключения'):
+        with self.assertRaisesRegex(RuntimeError, '/login 1'):
             await self.publisher.publish(self.pages)
         self.assertEqual(self.publisher.counter, 10)
 

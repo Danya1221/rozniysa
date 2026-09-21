@@ -1,4 +1,6 @@
 """Private administrator controls for covers and recoverable publication."""
+import json
+from bot_publisher import digest, plain
 from control_catalog import CatalogController, block_id
 from prices import select_items
 from retail_catalog import to_product, render_prices
@@ -8,12 +10,34 @@ class RetailController(CatalogController):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.cover_waiting = {}
-        self.retry_waiting = set()
+        self.retry_waiting = {}
 
     def menu(self):
         rows = super().menu()["inline_keyboard"]
         rows.insert(0, [{"text": "📷 Обложки брендов", "callback_data": "retail:covers"}])
+        if self.pending_snapshot():
+            rows.insert(0, [{"text": "♻️ Восстановить публикацию", "callback_data": "retail:recover"}])
         return {"inline_keyboard": rows}
+
+    def pending_snapshot(self):
+        binding = self.service.publisher.binding()
+        return {field: value for field in ("pending_publish", "pending_retail_node")
+                if (value := self.service.state.get(field)) and value.get("binding") == binding}
+
+    async def show_recovery(self, user_id):
+        pending = self.pending_snapshot()
+        if not pending:
+            await self.send(user_id, "Зависших отправок нет. Нажми «Запросить сейчас».", self.menu())
+            return
+        token = digest(json.dumps(pending, sort_keys=True, ensure_ascii=False))[:16]
+        self.retry_waiting[user_id] = (token, pending)
+        previews = "\n\n".join(plain(p["text"])[:700] for p in pending.values())
+        await self.send(user_id,
+            "Группа привязана. Нужно проверить, появилось ли это сообщение после сбоя:\n\n"
+            + previews + "\n\nЕсли оно есть — добавь в группу Telegram-аккаунт 1 из /login 1 и нажми «Запросить сейчас». "
+            "Бот найдёт сообщение и продолжит обновление.\n"
+            "Если ни одного из показанных сообщений нет, нажми кнопку ниже.",
+            {"inline_keyboard": [[{"text": "Проверил: сообщений нет — повторить", "callback_data": "retail:retry:" + token}]]})
 
     def known_blocks(self):
         items = select_items(self.service.cached_items(include_closed=True), self.service.settings, self.service.options())
@@ -42,12 +66,20 @@ class RetailController(CatalogController):
             if brand:
                 self.cover_waiting[user_id] = brand
                 await self.send(user_id, f"Отправь фото для «{brand}» как фотографию (не файл). /cancel — отмена.")
-        elif data == "retail:retry" and user_id in self.retry_waiting:
+        elif data in {"retail:recover", "retail:retry"}:
+            await self.show_recovery(user_id)
+        elif data.startswith("retail:retry:"):
             if self.service.lock.locked() or (self.task and not self.task.done()):
                 await self.send(user_id, "Сначала дождись завершения текущего обновления.")
                 return
-            self.retry_waiting.discard(user_id)
-            self.service.state.update({"pending_publish": None, "pending_retail_node": None})
+            current = self.pending_snapshot()
+            expected = self.retry_waiting.get(user_id)
+            if not expected or expected[0] != data.rsplit(":", 1)[1] or expected[1] != current:
+                await self.send(user_id, "Состояние отправки изменилось. Проверь актуальное сообщение.")
+                await self.show_recovery(user_id)
+                return
+            self.retry_waiting.pop(user_id, None)
+            self.service.state.update({field: None for field in current})
             await self.refresh_catalog(user_id)
 
     async def handle_message(self, message):
@@ -58,14 +90,11 @@ class RetailController(CatalogController):
         text = (message.get("text") or "").strip()
         if self.allowed(user_id, chat.get("type")) and chat.get("id") == user_id:
             if text == "/retry_publish":
-                self.retry_waiting.add(user_id)
-                await self.send(user_id, "Проверь последние сообщения группы. Нажимай только если последняя отправка "
-                                "точно НЕ появилась: повтор может создать дубль.", {"inline_keyboard": [[
-                                    {"text": "Проверил: сообщения нет, повторить", "callback_data": "retail:retry"}]]})
+                await self.show_recovery(user_id)
                 return
             if text == "/cancel":
                 self.cover_waiting.pop(user_id, None)
-                self.retry_waiting.discard(user_id)
+                self.retry_waiting.pop(user_id, None)
             elif user_id in self.cover_waiting and message.get("photo"):
                 brand = self.cover_waiting.pop(user_id)
                 covers = self.service.state.get("retail_covers", {})
