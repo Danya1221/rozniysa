@@ -175,6 +175,20 @@ class RetailRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('iPhone 17 256 Blue', sent_text)
         self.assertEqual(markup['inline_keyboard'][0][0]['callback_data'], 'retail:recover_publish')
 
+    async def test_main_menu_shows_recovery_button_when_pending_recovery_exists(self):
+        service = self.service()
+        controller = self.controller(service)
+        service.publisher.target = -100123456
+        self.state.set('retail_pending_recovery', {
+            'binding': service.publisher.binding(),
+            'field': 'pending_publish',
+            'preview': 'iPhone 17 256 Blue — 150 000',
+        })
+        menu = controller.menu()
+        callbacks = [button.get('callback_data')
+                     for row in menu['inline_keyboard'] for button in row]
+        self.assertIn('retail:recover_publish', callbacks)
+
     async def test_generated_photo_5xx_is_not_retried_and_keeps_checkpoint(self):
         class Response:
             status = 503
