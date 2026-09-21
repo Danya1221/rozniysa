@@ -463,19 +463,27 @@ class RetailPublisher(BotAPIPublisher):
             stored = self.state.get("published", {}) or {}
             manifest = stored.get("messages", {}) if stored.get("binding") == binding else {}
 
-            # Keep the old hourly existence probe. If a managed price message was
-            # manually deleted, remove its stale ID first; the layout check below
-            # will then either recreate it at the end of its brand or rebuild the
-            # affected chronology when insertion in the middle is required.
-            await self._verify_or_rebuild_manifest(pages, manifest, binding)
-            nodes = self.nodes()
-
-            # Telegram cannot move an existing message. If the old deployment has
-            # prices first and covers later (or a new section must be inserted in
-            # the middle), rebuild the managed layout once in the correct order.
-            if self._layout_needs_rebuild(pages, manifest, nodes):
+            # Layout v3 is the first production migration that guarantees the
+            # storefront chronology in an already-populated Telegram group. The
+            # previous build could pass clean-state tests while reusing legacy
+            # message IDs (all covers together, prices elsewhere). Force exactly
+            # one rebuild of managed posts when upgrading that real state.
+            layout_version = int(self.state.get("retail_layout_version", 0) or 0)
+            if layout_version < 3:
                 await self._reset_interleaved_layout()
                 manifest, nodes = {}, {}
+            else:
+                # Keep the hourly existence probe after migration. If a managed
+                # price was manually deleted, the layout check below decides
+                # whether it can be appended safely or requires a rebuild.
+                await self._verify_or_rebuild_manifest(pages, manifest, binding)
+                nodes = self.nodes()
+
+                # Telegram cannot move an existing message. If a new section must
+                # be inserted in the middle, rebuild the managed layout.
+                if self._layout_needs_rebuild(pages, manifest, nodes):
+                    await self._reset_interleaved_layout()
+                    manifest, nodes = {}, {}
 
             desired = self._desired_units(pages)
             has_missing = any(self._unit_id(unit, manifest, nodes) is None for unit in desired)
@@ -639,7 +647,7 @@ class RetailPublisher(BotAPIPublisher):
                 "retail_price_keyboards",
                 {k: v for k, v in keyboard_hashes.items() if k in manifest},
             )
-            self.state.set("retail_layout_version", 2)
+            self.state.set("retail_layout_version", 3)
 
             pinned = {"binding": binding, "id": root0_id}
             if self.state.get("retail_pinned") != pinned:
