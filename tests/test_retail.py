@@ -49,20 +49,22 @@ class CatalogTests(unittest.TestCase):
         items = parse_documents(['''Samsung Galaxy S25 12/256 Black — 65000
 Samsung Galaxy S25 Ultra 12/512 Titanium Gray — 90000
 Samsung Galaxy S26 12/256 Black — 75000
+Samsung Galaxy S26 FE 12/256 White — 79000
 Samsung Galaxy S26+ 12/256 Blue — 82000
 Samsung Galaxy S26 Ultra 12/512 Titanium Black — 105000''']).items
         products = [to_product(item, Settings()) for item in items]
 
-        self.assertEqual([p['brand'] for p in products], ['Samsung'] * 5)
+        self.assertEqual([p['brand'] for p in products], ['Samsung'] * 6)
         self.assertEqual(
             [p['section'] for p in products],
-            ['S25', 'S25', 'S26', 'S26', 'S26'],
+            ['S25', 'S25', 'S26 / S26 FE', 'S26 / S26 FE',
+             'S26+ / S26 Ultra', 'S26+ / S26 Ultra'],
         )
 
         _, navigation = render_prices(products, 'checkout_test_bot')
         self.assertEqual(
             [entry['section'] for entry in navigation['Samsung']],
-            ['S25', 'S26'],
+            ['S25', 'S26 / S26 FE', 'S26+ / S26 Ultra'],
         )
 
     def test_samsung_fold_flip_and_wearables_have_requested_retail_sections(self):

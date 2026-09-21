@@ -50,9 +50,10 @@ def brand_section(item):
             (r"\bTab\b", "Планшеты"),
             (r"\b(?:Watch|Buds)\b", "Часы / Наушники"),
             (r"\bA\s*\d{2,3}\b", "Galaxy A"),
-            # Retail Samsung S-series is split into customer-facing buttons.
-            # S26, S26+ and S26 Ultra all stay in the same S26 section.
-            (r"\bS\s*26(?:\s*Ultra|\+|\s*Plus)?\b", "S26"),
+            # Keep S26 pages semantically split when stock is large:
+            # base/FE first, then Plus/Ultra.
+            (r"\bS\s*26\s*(?:FE)?\b", "S26 / S26 FE"),
+            (r"\bS\s*26\s*(?:\+|Plus|Ultra)\b", "S26+ / S26 Ultra"),
             (r"\bS\s*25(?:\s*(?:Ultra|Edge|FE|\+|Plus))?\b", "S25"),
             (r"\bS\s*\d{2}\b", "Galaxy S"),
         ]:
@@ -93,7 +94,7 @@ def section_order(value):
 
     presets = [
         "Apple Watch", "AirPods", "iPad", "MacBook / iMac", "Mac mini",
-        "Mac Studio", "Аксессуары Apple", "Galaxy A", "S25", "S26", "Galaxy S",
+        "Mac Studio", "Аксессуары Apple", "Galaxy A", "S25", "S26 / S26 FE", "S26+ / S26 Ultra", "Galaxy S",
         "Fold / Flip", "Планшеты", "Часы / Наушники",
     ]
     return (1, presets.index(value), natural(value)) if value in presets else (2, 0, natural(value))
