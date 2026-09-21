@@ -61,10 +61,18 @@ def dedupe_products(products):
 
 
 def section_order(value):
-    presets = ["iPhone 11", "iPhone 12", "iPhone 13", "iPhone 14", "iPhone 15", "iPhone 16", "iPhone 17",
-               "Apple Watch", "MacBook / iMac", "iPad", "AirPods", "Аксессуары Apple", "Galaxy A", "Galaxy S",
-               "Galaxy Fold / Flip", "Планшеты", "Часы", "Наушники"]
-    return presets.index(value) if value in presets else len(presets), natural(value)
+    # Every iPhone generation is automatic: 11, 12, ... 18, 19, etc. New
+    # generations stay together at the top of Apple without a code update.
+    match = re.fullmatch(r"iPhone\s+(\d{1,2})", value, re.I)
+    if match:
+        return 0, int(match.group(1))
+
+    presets = [
+        "Apple Watch", "AirPods", "iPad", "MacBook / iMac", "Mac mini",
+        "Mac Studio", "Аксессуары Apple", "Galaxy A", "Galaxy S",
+        "Galaxy Fold / Flip", "Планшеты", "Часы", "Наушники",
+    ]
+    return (1, presets.index(value), natural(value)) if value in presets else (2, 0, natural(value))
 
 
 def brand_order(value):
