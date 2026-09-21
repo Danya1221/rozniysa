@@ -117,9 +117,13 @@ class CatalogController(FirstMessageController):
     async def _refresh_order_result(self, chat_id, user_id, message_id):
         try:
             count, changes = await self.service.refresh_format()
+            if count is None:
+                notice = "⏳ Порядок сохранён. Текущее обновление уже идёт — применю автоматически после него."
+            else:
+                notice = f"✅ Порядок применён. Прайс обновлён: {count} позиций."
             await self.show_order(
                 chat_id, user_id, message_id=message_id,
-                notice=f"✅ Порядок применён. Прайс обновлён: {count} позиций.",
+                notice=notice,
             )
         except Exception as exc:
             await self.show_order(
@@ -140,7 +144,14 @@ class CatalogController(FirstMessageController):
     async def _refresh_result(self, chat_id):
         try:
             count, changes = await self.service.refresh_format()
-            await self.send(chat_id, f"✅ Порядок и каталог обновлены. В прайсе {count} позиций.", self.menu())
+            if count is None:
+                await self.send(
+                    chat_id,
+                    "⏳ Настройки сохранены. Текущее обновление уже идёт — каталог обновится автоматически после него.",
+                    self.menu(),
+                )
+            else:
+                await self.send(chat_id, f"✅ Порядок и каталог обновлены. В прайсе {count} позиций.", self.menu())
         except Exception as exc:
             await self.send(chat_id, "Настройки сохранены; обновление не завершилось: " + str(exc), self.menu())
 
