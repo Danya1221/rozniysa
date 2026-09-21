@@ -12,6 +12,9 @@ class RetailController(CatalogController):
 
     def menu(self):
         rows = super().menu()["inline_keyboard"]
+        recovery = self.service.state.get("retail_pending_recovery", {}) or {}
+        if recovery and recovery.get("binding") == self.service.publisher.binding():
+            rows.insert(0, [{"text": "♻️ Восстановить публикацию", "callback_data": "retail:recover_publish"}])
         rows.insert(0, [{"text": "📷 Обложки брендов", "callback_data": "retail:covers"}])
         return {"inline_keyboard": rows}
 
