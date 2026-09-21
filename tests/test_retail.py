@@ -205,6 +205,34 @@ class RetailAsyncTests(unittest.IsolatedAsyncioTestCase):
             if m in {'editMessageCaption','editMessageText'}:
                 self.assertTrue(all(len(row) <= 2 for row in p.get('reply_markup',{}).get('inline_keyboard',[])))
 
+    async def test_main_catalog_is_physically_last_message(self):
+        await self.publisher.publish(self.pages)
+        nodes = self.publisher.nodes()
+        manifest = self.state.get('published')['messages']
+        price_ids = [entry['id'] for entry in manifest.values()]
+        brand_ids = [
+            record['id'] for key, record in nodes.items()
+            if key.startswith('brand:')
+        ]
+        self.assertGreater(nodes['root:1']['id'], max(price_ids + brand_ids))
+        self.assertGreater(nodes['root:0']['id'], nodes['root:1']['id'])
+        self.assertEqual(self.state.get('retail_pinned')['id'], nodes['root:0']['id'])
+        self.assertTrue(self.store.get('system', 'catalog_url').endswith('/' + str(nodes['root:0']['id'])))
+
+    async def test_new_price_post_moves_catalog_back_to_end(self):
+        await self.publisher.publish(self.pages)
+        old_root = self.publisher.nodes()['root:0']['id']
+
+        expanded = dict(self.pages)
+        expanded['extra:test'] = '<b>Тестовый раздел</b>\n\n<a href="https://t.me/checkout_test_bot?start=p_extra">Товар — 1 000</a>'
+        await self.publisher.publish(expanded)
+
+        nodes = self.publisher.nodes()
+        manifest = self.state.get('published')['messages']
+        self.assertNotEqual(nodes['root:0']['id'], old_root)
+        self.assertGreater(nodes['root:0']['id'], max(entry['id'] for entry in manifest.values()))
+        self.assertGreater(nodes['root:0']['id'], nodes['root:1']['id'])
+
     async def test_unchanged_prices_do_not_send_duplicate_messages(self):
         await self.publisher.publish(self.pages)
         count = self.publisher.counter
