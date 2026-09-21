@@ -12,7 +12,7 @@ from retail_catalog import to_product, dedupe_products, render_prices
 from runtime import SyncService, LoginRequired, merge_lowest, timestamp
 
 log = logging.getLogger(__name__)
-RETAIL_BUILD = "retail-2026.09.21-brand-storefront-v3"
+RETAIL_BUILD = "retail-2026.09.21-brand-storefront-v4"
 
 
 class RetailSyncService(SyncService):
@@ -110,11 +110,23 @@ class RetailSyncService(SyncService):
 
     async def refresh_format(self):
         if self.lock.locked():
-            raise RuntimeError("Обновление уже идёт. Настройки сохранены и применятся после чтения прайса")
+            # A supplier sync is already running. Options are persisted before
+            # this call, so queue one render with those fresh options instead of
+            # surfacing a false failure to the operator.
+            self.state.set("retail_refresh_pending", True)
+            return None, None
         async with self.lock:
             if not self.state.get("sources"):
                 raise RuntimeError("Сначала подключи аккаунт и запроси прайс")
-            return await self.render(closed=not self.enabled())
+            self.state.set("retail_refresh_pending", False)
+            count, changes = await self.render(closed=not self.enabled())
+            # If another setting changed while Telegram publication was in
+            # progress, render once more with the newest saved options.
+            if self.state.get("retail_refresh_pending"):
+                self.state.set("retail_refresh_pending", False)
+                count, extra = await self.render(closed=not self.enabled())
+                changes += extra
+            return count, changes
 
     async def sync(self, force=False):
         async with self.lock:
@@ -163,7 +175,16 @@ class RetailSyncService(SyncService):
                 if not self.enabled() and not force:
                     await asyncio.to_thread(self.retail.mark_uncertain, "Обновление приостановлено")
                     return "Чтение завершено; публикация приостановлена"
+                # Saved control changes made while supplier reading is in
+                # progress are included in this render. A change that lands
+                # during publication sets retail_refresh_pending and gets one
+                # immediate follow-up render before the lock is released.
+                self.state.set("retail_refresh_pending", False)
                 count, changes = await self.render()
+                if self.state.get("retail_refresh_pending"):
+                    self.state.set("retail_refresh_pending", False)
+                    count, extra = await self.render()
+                    changes += extra
                 confirmed, _ = self.freshness()
                 message = f"Розничный прайс: {count} позиций, изменений: {changes}."
                 if not confirmed:
