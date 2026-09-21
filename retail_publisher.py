@@ -7,8 +7,9 @@ import time
 from contextlib import suppress
 
 import aiohttp
+from telethon.utils import get_peer_id
 
-from bot_publisher import BotAPIPublisher, digest, plain
+from bot_publisher import BotAPIDefiniteError, BotAPIPublisher, digest, plain
 from catalog_publisher import message_link
 from retail_catalog import cover_bytes
 
@@ -125,21 +126,69 @@ class RetailPublisher(BotAPIPublisher):
         self.state.set("published", {"binding": binding, "messages": manifest})
         return 0
 
+    async def _recovery_history(self):
+        """Refresh MTProto dialog cache, then read the bound price group history."""
+        if not self.client:
+            raise RuntimeError("Telegram-аккаунт поставщика ещё не подключён")
+
+        target = int(self.target)
+        entity = None
+        try:
+            # The publishing group may have been bound after this user session
+            # started. Refresh dialogs so Telethon learns the channel access hash.
+            dialogs = await self.client.get_dialogs(limit=None)
+            for dialog in dialogs:
+                candidate = getattr(dialog, "entity", None)
+                if candidate is None:
+                    continue
+                try:
+                    if get_peer_id(candidate) == target:
+                        entity = candidate
+                        break
+                except Exception:
+                    continue
+            if entity is None:
+                entity = await self.client.get_entity(target)
+            return await self.client.get_messages(entity, limit=300)
+        except Exception as exc:
+            raise RuntimeError(
+                "Не удалось прочитать историю группы через Telegram-аккаунт поставщика"
+            ) from exc
+
+    def _set_pending_recovery(self, field, pending, reason):
+        preview = " ".join(plain(pending.get("text", "")).split())
+        if len(preview) > 180:
+            preview = preview[:177] + "…"
+        self.state.set("retail_pending_recovery", {
+            "binding": self.binding(),
+            "field": field,
+            "preview": preview or "(текст сообщения недоступен)",
+            "reason": reason,
+        })
+
     async def recover_pending(self):
         for field in ("pending_publish", "pending_retail_node"):
             pending = self.state.get(field)
             if not pending or pending.get("binding") != self.binding():
                 continue
-            if not self.client:
-                raise RuntimeError("Проверка предыдущей отправки ждёт подключения аккаунта поставщика")
             try:
-                messages = await self.client.get_messages(self.target, limit=300)
-            except Exception:
-                raise RuntimeError("Не удалось проверить предыдущую отправку: аккаунту нужен доступ к группе прайса") from None
+                messages = await self._recovery_history()
+            except RuntimeError as exc:
+                self._set_pending_recovery(field, pending, str(exc))
+                raise RuntimeError(
+                    "Предыдущую отправку нельзя проверить автоматически. "
+                    "Проверь указанное сообщение в группе и используй «Восстановить публикацию» только если его там нет"
+                ) from None
+
             matches = [m for m in messages if getattr(m, "sender_id", None) == self.bot_id
                        and (getattr(m, "raw_text", "") or "") == plain(pending["text"])]
             if not matches:
-                raise RuntimeError("Результат предыдущей отправки неизвестен. Проверь группу и используй /retry_publish только если сообщения нет")
+                self._set_pending_recovery(field, pending, "Сообщение не найдено среди последних 300 сообщений")
+                raise RuntimeError(
+                    "Предыдущая отправка не найдена автоматически. "
+                    "Проверь указанное сообщение в группе и используй «Восстановить публикацию» только если его там нет"
+                )
+
             message = min(matches, key=lambda m: m.id)
             if field == "pending_publish":
                 stored = self.state.get("published", {})
@@ -150,7 +199,7 @@ class RetailPublisher(BotAPIPublisher):
                 nodes = self.nodes()
                 nodes[pending["key"]] = {"id": message.id, "hash": "", "photo": pending.get("photo", False)}
                 self.save_nodes(nodes)
-            self.state.set(field, None)
+            self.state.update({field: None, "retail_pending_recovery": None})
 
     async def _photo(self, caption, brand, keyboard, photo_id=None):
         if photo_id:
@@ -200,9 +249,9 @@ class RetailPublisher(BotAPIPublisher):
             if status >= 500:
                 raise RuntimeError("Telegram не подтвердил отправку обложки; повтор только после проверки истории")
 
-            raise RuntimeError(str(result.get("description", "Не удалось отправить обложку")))
+            raise BotAPIDefiniteError(str(result.get("description", "Не удалось отправить обложку")))
 
-        raise RuntimeError("Telegram не принял обложку после нескольких попыток")
+        raise BotAPIDefiniteError("Telegram не принял обложку после нескольких попыток")
 
     async def node(self, key, text, rows, brand=None):
         nodes = self.nodes()
@@ -232,8 +281,12 @@ class RetailPublisher(BotAPIPublisher):
                     raise
         if not record.get("id"):
             self.state.set("pending_retail_node", {"binding": self.binding(), "key": key, "text": text, "photo": bool(brand)})
-            message = (await self._photo(text, brand, keyboard, photo_id or None) if brand else
-                       await self.api("sendMessage", chat_id=self.target, text=text, parse_mode="HTML", reply_markup=keyboard))
+            try:
+                message = (await self._photo(text, brand, keyboard, photo_id or None) if brand else
+                           await self.api("sendMessage", chat_id=self.target, text=text, parse_mode="HTML", reply_markup=keyboard))
+            except BotAPIDefiniteError:
+                self.state.set("pending_retail_node", None)
+                raise
             record = {"id": int(message["message_id"])}
         record.update(hash=fingerprint, photo=bool(brand), photo_id=photo_id, checked=time.time(),
                       text=text, rows=rows)
